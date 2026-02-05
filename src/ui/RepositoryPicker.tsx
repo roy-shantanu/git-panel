@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
+import { Diff, Hunk, parseDiff } from "react-diff-view";
+import "react-diff-view/style/index.css";
 import {
   clAssignFiles,
   clAssignHunks,
@@ -58,10 +60,9 @@ export default function RepositoryPicker() {
   const [diffHunkError, setDiffHunkError] = useState<string | null>(null);
   const [selectedHunkIds, setSelectedHunkIds] = useState<Set<string>>(new Set());
   const [hunkBusy, setHunkBusy] = useState(false);
+  const [hunkSelectionEnabled, setHunkSelectionEnabled] = useState(true);
   const [fileScrollTop, setFileScrollTop] = useState(0);
-  const [hunkScrollTop, setHunkScrollTop] = useState(0);
   const fileListRef = useRef<HTMLDivElement | null>(null);
-  const hunkListRef = useRef<HTMLDivElement | null>(null);
   const [branches, setBranches] = useState<BranchList | null>(null);
   const [branchBusy, setBranchBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -107,6 +108,7 @@ export default function RepositoryPicker() {
     setDiffText("");
     setDiffKind("unstaged");
     setSelectedChangelistId("default");
+    setHunkSelectionEnabled(true);
     setCommitMessage("");
     setCommitPreview(null);
     setCommitError(null);
@@ -225,6 +227,12 @@ export default function RepositoryPicker() {
       cancelled = true;
     };
   }, [repo?.repo_id, selectedPath, diffKind]);
+
+  useEffect(() => {
+    if (!hunkSelectionEnabled) {
+      setSelectedHunkIds(new Set());
+    }
+  }, [hunkSelectionEnabled]);
 
   useEffect(() => {
     if (!repo?.repo_id) {
@@ -696,16 +704,23 @@ export default function RepositoryPicker() {
   const fileBottomPadding =
     Math.max(0, filteredFiles.length - fileEnd) * fileRowHeight;
 
-  const hunkRowHeight = 160;
-  const hunkListHeight = 360;
-  const hunkStart = Math.max(0, Math.floor(hunkScrollTop / hunkRowHeight) - 2);
-  const hunkEnd = Math.min(
-    diffHunks.length,
-    hunkStart + Math.ceil(hunkListHeight / hunkRowHeight) + 6
-  );
-  const visibleHunks = diffHunks.slice(hunkStart, hunkEnd);
-  const hunkTopPadding = hunkStart * hunkRowHeight;
-  const hunkBottomPadding = Math.max(0, diffHunks.length - hunkEnd) * hunkRowHeight;
+  const { parsedDiff, diffParseError } = useMemo(() => {
+    if (!diffText) return { parsedDiff: [], diffParseError: null };
+    try {
+      return { parsedDiff: parseDiff(diffText), diffParseError: null };
+    } catch (error) {
+      console.error("parseDiff failed", error);
+      return { parsedDiff: [], diffParseError: "Diff could not be parsed." };
+    }
+  }, [diffText]);
+
+  const hunkIdByHeader = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const hunk of diffHunks) {
+      map.set(hunk.header, hunk.id);
+    }
+    return map;
+  }, [diffHunks]);
 
   return (
     <section className="panel">
@@ -1078,10 +1093,18 @@ export default function RepositoryPicker() {
                 {diffHunkError && <div className="commit-error">{diffHunkError}</div>}
                 {selectedFile && (
                   <div className="hunk-toolbar">
+                    <label className="commit-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={hunkSelectionEnabled}
+                        onChange={(event) => setHunkSelectionEnabled(event.target.checked)}
+                      />
+                      Enable hunk selection
+                    </label>
                     <button
                       className="chip"
                       onClick={handleAssignHunks}
-                      disabled={hunkBusy || selectedHunkIds.size === 0}
+                      disabled={!hunkSelectionEnabled || hunkBusy || selectedHunkIds.size === 0}
                     >
                       Assign hunks
                     </button>
@@ -1089,6 +1112,7 @@ export default function RepositoryPicker() {
                       className="chip"
                       onClick={handleUnassignHunks}
                       disabled={
+                        !hunkSelectionEnabled ||
                         hunkBusy ||
                         !activeHunkAssignment ||
                         activeHunkAssignment.changelist_id !== selectedChangelistId
@@ -1105,38 +1129,43 @@ export default function RepositoryPicker() {
                     )}
                   </div>
                 )}
-                {diffHunks.length === 0 ? (
-                  <pre className="diff-output">
-                    {diffLoading
-                      ? "Loading diff..."
-                      : diffText || "No diff to display."}
-                  </pre>
-                ) : (
-                  <div
-                    ref={hunkListRef}
-                    className="hunk-list-virtual"
-                    style={{ height: hunkListHeight }}
-                    onScroll={(event) =>
-                      setHunkScrollTop((event.target as HTMLDivElement).scrollTop)
-                    }
-                  >
-                    <div style={{ paddingTop: hunkTopPadding, paddingBottom: hunkBottomPadding }}>
-                      {visibleHunks.map((hunk) => (
-                        <div key={hunk.id} className="hunk-card">
-                          <label className="hunk-header">
-                            <input
-                              type="checkbox"
-                              checked={selectedHunkIds.has(hunk.id)}
-                              onChange={() => toggleHunk(hunk.id)}
-                            />
-                            <span>{hunk.header}</span>
-                          </label>
-                          <pre className="hunk-content">{hunk.content}</pre>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                <div className="diff-view">
+                  {diffLoading && <div className="muted">Loading diff...</div>}
+                  {!diffLoading && diffParseError && (
+                    <div className="muted">{diffParseError}</div>
+                  )}
+                  {!diffLoading && !diffParseError && parsedDiff.length === 0 && (
+                    <div className="muted">No diff to display.</div>
+                  )}
+                    {parsedDiff.map((file) => (
+                      <Diff
+                        key={file.oldPath}
+                        viewType="split"
+                        diffType={file.type}
+                        hunks={file.hunks}
+                      >
+                      {(hunks) =>
+                        hunks.map((hunk) => {
+                          const hunkId = hunkIdByHeader.get(hunk.content.trim());
+                          return (
+                            <div key={hunk.content} className="diff-hunk-row">
+                              {hunkSelectionEnabled && hunkId && (
+                                <label className="hunk-toggle">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedHunkIds.has(hunkId)}
+                                    onChange={() => toggleHunk(hunkId)}
+                                  />
+                                </label>
+                              )}
+                              <Hunk hunk={hunk} />
+                            </div>
+                          );
+                        })
+                      }
+                    </Diff>
+                  ))}
+                </div>
               </div>
             </div>
           </div>

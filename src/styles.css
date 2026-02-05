@@ -3,6 +3,14 @@
   font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
   background: #f7f7f5;
   color: #1d1d1f;
+  --diff-background-color: #ffffff;
+  --diff-text-color: #1d1d1f;
+  --diff-gutter-insert-background-color: #d8f5e1;
+  --diff-gutter-delete-background-color: #fde2e4;
+  --diff-code-insert-background-color: #e9fbef;
+  --diff-code-delete-background-color: #fff0f0;
+  --diff-code-insert-edit-background-color: #b8eec7;
+  --diff-code-delete-edit-background-color: #f5b3b3;
 }
 
 * {
@@ -44,7 +52,8 @@ body {
   border: 1px solid #e2e2df;
   border-radius: 10px;
   padding: 20px;
-  max-width: 1100px;
+  max-width: none;
+  width: 100%;
 }
 
 .panel h2 {
@@ -136,18 +145,6 @@ body {
   gap: 6px;
 }
 
-.diff-output {
-  margin: 0;
-  padding: 12px;
-  background: #0f1115;
-  color: #e8e8e8;
-  border-radius: 8px;
-  min-height: 220px;
-  overflow: auto;
-  font-size: 12px;
-  white-space: pre-wrap;
-}
-
 .hunk-toolbar {
   display: flex;
   gap: 8px;
@@ -167,6 +164,42 @@ body {
   background: #ffffff;
   overflow: auto;
   padding: 8px;
+}
+
+.diff-view {
+  border: 1px solid #ececec;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 8px;
+  overflow: auto;
+  margin-top: 12px;
+}
+
+.diff-hunk-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.diff-hunk-row .diff {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.diff {
+  table-layout: auto;
+}
+
+.diff-code {
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+.hunk-toggle {
+  display: inline-flex;
+  align-items: flex-start;
+  padding-top: 6px;
 }
 
 .hunk-card {
