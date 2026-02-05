@@ -19,6 +19,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             api::repo_open,
             api::repo_status,
+            api::repo_diff,
+            api::repo_stage,
+            api::repo_unstage,
             api::repo_list_recent,
             api::app_version
         ])

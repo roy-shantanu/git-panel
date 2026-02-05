@@ -13,6 +13,26 @@ pub struct RepoStatusRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoDiffRequest {
+    pub repo_id: RepoId,
+    pub path: String,
+    pub kind: RepoDiffKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RepoDiffKind {
+    Unstaged,
+    Staged,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoPathRequest {
+    pub repo_id: RepoId,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoSummary {
     pub repo_id: RepoId,
     pub path: String,
@@ -23,13 +43,41 @@ pub struct RepoSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoStatus {
     pub repo_id: RepoId,
-    pub branch: String,
+    pub head: RepoHead,
+    pub counts: RepoCounts,
+    pub files: Vec<StatusFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoHead {
+    pub branch_name: String,
+    pub oid_short: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoCounts {
     pub staged: u32,
-    pub changed: u32,
+    pub unstaged: u32,
     pub untracked: u32,
-    pub ahead: u32,
-    pub behind: u32,
-    pub last_updated: u64,
+    pub conflicted: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusFile {
+    pub path: String,
+    pub status: StatusKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StatusKind {
+    Staged,
+    Unstaged,
+    Both,
+    Untracked,
+    Conflicted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,3 +93,7 @@ pub struct AppVersion {
     pub version: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnifiedDiffText {
+    pub text: String,
+}
