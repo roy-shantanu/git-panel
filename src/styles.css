@@ -648,40 +648,6 @@ body {
   min-height: 0;
 }
 
-.changelist-staged {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px;
-  background: var(--panel-alt);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.staged-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.staged-title {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--muted);
-}
-
-.staged-name {
-  font-weight: 600;
-  font-size: 13px;
-}
-
-.staged-count {
-  font-size: 12px;
-  color: var(--muted);
-}
-
 .changelist-scroll {
   overflow: auto;
   min-height: 0;
@@ -785,6 +751,11 @@ body {
   background: rgba(37, 99, 235, 0.08);
 }
 
+.changelist-link.staged {
+  cursor: default;
+  font-weight: 600;
+}
+
 .changelist-link::before {
   content: "";
   width: 14px;
@@ -828,7 +799,7 @@ body {
   padding-left: 8px;
 }
 
-.changelist-file::before {
+.changelist-files .changelist-file::before {
   content: "";
   position: absolute;
   left: 10px;
@@ -839,8 +810,15 @@ body {
   opacity: 0.6;
 }
 
-.changelist-file.empty::before {
+.changelist-files .changelist-file.empty::before {
   display: none;
+}
+
+.changelist-file-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
 }
 
 .changelist-file-link {
@@ -859,6 +837,7 @@ body {
   border-radius: 6px;
   border: 1px solid transparent;
   transition: border-color 0.2s ease, background 0.2s ease;
+  flex: 1;
 }
 
 .changelist-file.active .changelist-file-link {
@@ -871,6 +850,42 @@ body {
 .changelist-file-link:hover {
   border-color: var(--border);
   background: var(--panel-alt);
+}
+
+.file-action {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-alt);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+  flex: 0 0 auto;
+  transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+}
+
+.file-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.file-action--stage {
+  color: #15803d;
+  border-color: rgba(21, 128, 61, 0.4);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.file-action--unstage {
+  color: #b91c1c;
+  border-color: rgba(185, 28, 28, 0.4);
+  background: rgba(239, 68, 68, 0.12);
 }
 
 .changelist-actions {

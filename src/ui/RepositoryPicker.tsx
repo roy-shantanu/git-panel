@@ -60,7 +60,9 @@ import {
   repoListRecent,
   repoOpen,
   repoOpenWorktree,
+  repoStage,
   repoStatus,
+  repoUnstage,
   wtAdd,
   wtList,
   wtPrune,
@@ -92,12 +94,22 @@ const splitPath = (path: string) => {
   return { name, dir };
 };
 
+const isStagedStatus = (status: StatusFile["status"]) =>
+  status === "staged" || status === "both";
+
+const isUnstagedStatus = (status: StatusFile["status"]) =>
+  status === "unstaged" ||
+  status === "untracked" ||
+  status === "both" ||
+  status === "conflicted";
+
 type FileIconInfo = {
   className: string;
   url: string;
 };
 
 const ICONS_URL = "/material-icons";
+const STAGED_LIST_ID = "staged";
 
 const getFileIconInfo = (path: string): FileIconInfo => {
   const iconName = getIconForFilePath(path);
@@ -138,6 +150,7 @@ export default function RepositoryPicker() {
   const [commitAmend, setCommitAmend] = useState(false);
   const [commitDialogOpen, setCommitDialogOpen] = useState(false);
   const [commitSelection, setCommitSelection] = useState<Set<string>>(new Set());
+  const [fileActionBusy, setFileActionBusy] = useState<string | null>(null);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
   const [infoDialog, setInfoDialog] = useState<{
@@ -163,6 +176,11 @@ export default function RepositoryPicker() {
     useState<Changelist | null>(null);
 
   const files = status?.files ?? [];
+  const stagedFiles = useMemo(() => {
+    const list = files.filter((file) => isStagedStatus(file.status));
+    list.sort((a, b) => a.path.localeCompare(b.path));
+    return list;
+  }, [files]);
   const filesByChangelist = useMemo(() => {
     const map = new Map<string, StatusFile[]>();
     for (const file of files) {
@@ -180,9 +198,10 @@ export default function RepositoryPicker() {
     return map;
   }, [files]);
 
-  const changelistCounts = useMemo(() => {
+  const unstagedCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const file of files) {
+      if (!isUnstagedStatus(file.status)) continue;
       const key = file.changelist_id ?? "default";
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
@@ -905,6 +924,50 @@ export default function RepositoryPicker() {
     });
   };
 
+  const handleStageFile = async (file: StatusFile) => {
+    if (!repo) return;
+    setFileActionBusy(file.path);
+    try {
+      await repoStage(repo.repo_id, file.path);
+      const nextStatus = await repoStatus(repo.repo_id);
+      setStatus(nextStatus);
+      const clState = await clList(repo.repo_id);
+      setChangelists(clState);
+      setToast("File staged.");
+    } catch (error) {
+      console.error("repo_stage failed", error);
+      setToast("Stage failed.");
+    } finally {
+      setFileActionBusy(null);
+    }
+  };
+
+  const handleUnstageFile = async (file: StatusFile) => {
+    if (!repo) return;
+    setFileActionBusy(file.path);
+    try {
+      await repoUnstage(repo.repo_id, file.path);
+      let nextStatus = await repoStatus(repo.repo_id);
+      if (
+        changelists &&
+        nextStatus.files.some((item) => item.path === file.path)
+      ) {
+        const targetId = changelists.active_id ?? "default";
+        await clAssignFiles(repo.repo_id, targetId, [file.path]);
+        nextStatus = await repoStatus(repo.repo_id);
+      }
+      setStatus(nextStatus);
+      const clState = await clList(repo.repo_id);
+      setChangelists(clState);
+      setToast("File unstaged.");
+    } catch (error) {
+      console.error("repo_unstage failed", error);
+      setToast("Unstage failed.");
+    } finally {
+      setFileActionBusy(null);
+    }
+  };
+
   const handleSelectFile = (file: StatusFile, kind: RepoDiffKind) => {
     setSelectedFile(file);
     setSelectedPath(file.path);
@@ -1499,17 +1562,28 @@ export default function RepositoryPicker() {
               </div>
               {!changelistNavCollapsed && (
                 <div className="changelist-body">
-                  <div className="changelist-staged">
-                    <div className="staged-meta">
-                      <div className="staged-title">Staged list</div>
-                      <div className="staged-name">
-                        {changelistItems.find((item) => item.id === selectedChangelistId)
-                          ?.name ?? "Changelist"}
-                      </div>
-                      <div className="staged-count">
-                        {commitLoading ? "Previewing…" : `${commitPreview?.files.length ?? 0} files`}
-                      </div>
-                    </div>
+                  <div className="changelist-scroll">
+                    <ul className="changelist-list">
+                <li className="changelist-item changelist-item--staged">
+                  <div className="changelist-row">
+                    <button
+                      className={`collapse-toggle ${
+                        collapsedChangelists.has(STAGED_LIST_ID) ? "" : "open"
+                      }`}
+                      onClick={() => toggleChangelistCollapse(STAGED_LIST_ID)}
+                      aria-label={
+                        collapsedChangelists.has(STAGED_LIST_ID)
+                          ? "Expand staged list"
+                          : "Collapse staged list"
+                      }
+                      aria-expanded={!collapsedChangelists.has(STAGED_LIST_ID)}
+                    >
+                      ▶
+                    </button>
+                    <span className="changelist-link staged">Staged</span>
+                    <span className="count-pill">{stagedFiles.length}</span>
+                  </div>
+                  <div className="changelist-actions">
                     <button
                       className="button"
                       onClick={() => {
@@ -1531,12 +1605,59 @@ export default function RepositoryPicker() {
                       {commitBusy ? "Committing…" : "Commit"}
                     </button>
                   </div>
-                  <div className="changelist-scroll">
-                    <ul className="changelist-list">
+                  {!collapsedChangelists.has(STAGED_LIST_ID) && (
+                    <ul className="changelist-files">
+                      {stagedFiles.length === 0 ? (
+                        <li className="changelist-file empty">No files</li>
+                      ) : (
+                        stagedFiles.map((file) => {
+                          const { name, dir } = splitPath(file.path);
+                          const icon = getFileIconInfo(file.path);
+                          return (
+                            <li
+                              key={`staged-${file.path}`}
+                              className={`changelist-file ${
+                                selectedFile?.path === file.path ? "active" : ""
+                              }`}
+                            >
+                              <div className="changelist-file-row">
+                                <button
+                                  className="changelist-file-link"
+                                  title={file.path}
+                                  onClick={() => handleSelectFile(file, "staged")}
+                                >
+                                  <img
+                                    className={`file-icon ${icon.className}`}
+                                    src={icon.url}
+                                    alt=""
+                                    aria-hidden="true"
+                                    loading="lazy"
+                                  />
+                                  <span className="file-name">{name}</span>
+                                  {dir && <span className="file-dir">{dir}</span>}
+                                </button>
+                                <button
+                                  className="file-action file-action--unstage"
+                                  onClick={() => handleUnstageFile(file)}
+                                  disabled={fileActionBusy === file.path}
+                                  aria-label={`Unstage ${file.path}`}
+                                >
+                                  −
+                                </button>
+                              </div>
+                            </li>
+                          );
+                        })
+                      )}
+                    </ul>
+                  )}
+                </li>
                 {changelistItems.map((list) => {
-                  const count = changelistCounts.get(list.id) ?? 0;
                   const isActive = list.id === activeChangelistId;
-                  const listFiles = filesByChangelist.get(list.id) ?? [];
+                  const listFiles = (filesByChangelist.get(list.id) ?? []).filter((file) =>
+                    isUnstagedStatus(file.status)
+                  );
+                  const count = unstagedCounts.get(list.id) ?? 0;
                   const isCollapsed = collapsedChangelists.has(list.id);
                   return (
                     <li key={list.id} className="changelist-item">
@@ -1602,27 +1723,34 @@ export default function RepositoryPicker() {
                                     selectedFile?.path === file.path ? "active" : ""
                                   }`}
                                 >
-                                  <button
-                                    className="changelist-file-link"
-                                    title={file.path}
-                                    onClick={() => {
-                                      setSelectedChangelistId(list.id);
-                                      handleSelectFile(
-                                        file,
-                                        file.status === "staged" ? "staged" : "unstaged"
-                                      );
-                                    }}
-                                  >
-                                    <img
-                                      className={`file-icon ${icon.className}`}
-                                      src={icon.url}
-                                      alt=""
-                                      aria-hidden="true"
-                                      loading="lazy"
-                                    />
-                                    <span className="file-name">{name}</span>
-                                    {dir && <span className="file-dir">{dir}</span>}
-                                  </button>
+                                  <div className="changelist-file-row">
+                                    <button
+                                      className="changelist-file-link"
+                                      title={file.path}
+                                      onClick={() => {
+                                        setSelectedChangelistId(list.id);
+                                        handleSelectFile(file, "unstaged");
+                                      }}
+                                    >
+                                      <img
+                                        className={`file-icon ${icon.className}`}
+                                        src={icon.url}
+                                        alt=""
+                                        aria-hidden="true"
+                                        loading="lazy"
+                                      />
+                                      <span className="file-name">{name}</span>
+                                      {dir && <span className="file-dir">{dir}</span>}
+                                    </button>
+                                    <button
+                                      className="file-action file-action--stage"
+                                      onClick={() => handleStageFile(file)}
+                                      disabled={fileActionBusy === file.path}
+                                      aria-label={`Stage ${file.path}`}
+                                    >
+                                      +
+                                    </button>
+                                  </div>
                                 </li>
                               );
                             })
