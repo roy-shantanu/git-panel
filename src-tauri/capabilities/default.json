@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Base permissions for Git Panel",
+  "permissions": ["core:default", "dialog:allow-open"]
+}
+

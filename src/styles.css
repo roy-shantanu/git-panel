@@ -1,0 +1,92 @@
+:root {
+  color-scheme: light;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  background: #f7f7f5;
+  color: #1d1d1f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-header {
+  padding: 20px 28px;
+  border-bottom: 1px solid #e2e2df;
+  background: #ffffff;
+}
+
+.app-header h1 {
+  margin: 0 0 4px 0;
+  font-size: 24px;
+}
+
+.app-header p {
+  margin: 0;
+  color: #5d5d5f;
+}
+
+.app-main {
+  padding: 24px 28px;
+}
+
+.panel {
+  background: #ffffff;
+  border: 1px solid #e2e2df;
+  border-radius: 10px;
+  padding: 20px;
+  max-width: 720px;
+}
+
+.panel h2 {
+  margin-top: 0;
+}
+
+.row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.button {
+  padding: 8px 14px;
+  border: 1px solid #1d1d1f;
+  background: #1d1d1f;
+  color: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.button.secondary {
+  background: #ffffff;
+  color: #1d1d1f;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.status-card {
+  border: 1px solid #ececec;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fafafa;
+}
+
+.muted {
+  color: #6f6f73;
+  font-size: 13px;
+}

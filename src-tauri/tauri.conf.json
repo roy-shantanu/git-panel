@@ -1,0 +1,28 @@
+{
+  "productName": "Git Panel",
+  "version": "0.1.0",
+  "identifier": "com.gitpanel.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "security": {
+      "capabilities": ["default"]
+    },
+    "windows": [
+      {
+        "title": "Git Panel",
+        "width": 1100,
+        "height": 720
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": []
+  }
+}
