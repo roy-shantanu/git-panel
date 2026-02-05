@@ -4,8 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "copy-icons": "node scripts/copy-material-icons.mjs",
     "dev": "vite",
     "build": "vite build",
+    "postinstall": "node scripts/copy-material-icons.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -20,6 +22,7 @@
     "react": "^18.2.0",
     "react-diff-view": "^3.3.2",
     "react-dom": "^18.2.0",
+    "vscode-material-icons": "^0.1.1",
     "zustand": "^4.5.2"
   },
   "devDependencies": {

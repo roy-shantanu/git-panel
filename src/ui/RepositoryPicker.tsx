@@ -66,6 +66,7 @@ import {
   wtPrune,
   wtRemove
 } from "../api/tauri";
+import { getIconForFilePath, getIconUrlForFilePath } from "vscode-material-icons";
 import { useAppStore } from "../state/store";
 import type {
   BranchList,
@@ -89,6 +90,21 @@ const splitPath = (path: string) => {
   const name = parts.pop() ?? normalized;
   const dir = parts.join("/");
   return { name, dir };
+};
+
+type FileIconInfo = {
+  className: string;
+  url: string;
+};
+
+const ICONS_URL = "/material-icons";
+
+const getFileIconInfo = (path: string): FileIconInfo => {
+  const iconName = getIconForFilePath(path);
+  return {
+    className: `ext-${iconName}`,
+    url: getIconUrlForFilePath(path, ICONS_URL)
+  };
 };
 
 export default function RepositoryPicker() {
@@ -931,7 +947,12 @@ export default function RepositoryPicker() {
           <button className="nav-icon active" aria-label="Repository">
             RP
           </button>
-          <button className="nav-icon" aria-label="Changes">
+          <button
+            className="nav-icon"
+            aria-label="Toggle changelist panel"
+            aria-pressed={!changelistNavCollapsed}
+            onClick={() => setChangelistNavCollapsed((prev) => !prev)}
+          >
             CL
           </button>
           <button className="nav-icon" aria-label="Diffs">
@@ -1266,6 +1287,7 @@ export default function RepositoryPicker() {
                   <div className="commit-file-list">
                     {commitPreview.files.map((file) => {
                       const { name, dir } = splitPath(file.path);
+                      const icon = getFileIconInfo(file.path);
                       return (
                         <label key={file.path} className="commit-file-row">
                           <input
@@ -1274,6 +1296,13 @@ export default function RepositoryPicker() {
                             onChange={() => toggleCommitSelection(file.path)}
                           />
                           <span className="commit-file-text">
+                            <img
+                              className={`file-icon ${icon.className}`}
+                              src={icon.url}
+                              alt=""
+                              aria-hidden="true"
+                              loading="lazy"
+                            />
                             <span className="file-name">{name}</span>
                             {dir && <span className="file-dir">{dir}</span>}
                           </span>
@@ -1565,6 +1594,7 @@ export default function RepositoryPicker() {
                           ) : (
                             listFiles.map((file) => {
                               const { name, dir } = splitPath(file.path);
+                              const icon = getFileIconInfo(file.path);
                               return (
                                 <li
                                   key={`${list.id}-${file.path}`}
@@ -1583,6 +1613,13 @@ export default function RepositoryPicker() {
                                       );
                                     }}
                                   >
+                                    <img
+                                      className={`file-icon ${icon.className}`}
+                                      src={icon.url}
+                                      alt=""
+                                      aria-hidden="true"
+                                      loading="lazy"
+                                    />
                                     <span className="file-name">{name}</span>
                                     {dir && <span className="file-dir">{dir}</span>}
                                   </button>
