@@ -1,1 +1,2 @@
-{"default":{"identifier":"default","description":"Base permissions for Git Panel","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-open"]}}
+{"default":{"identifier":"default","description":"Base permissions for Git Panel","local":true,
+  "windows":["main"],"permissions":["core:default","dialog:allow-open"]}}

@@ -19,7 +19,7 @@ pub struct RepoDiffRequest {
     pub kind: RepoDiffKind,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RepoDiffKind {
     Unstaged,
@@ -150,6 +150,8 @@ pub struct StatusFile {
     pub changelist_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changelist_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changelist_partial: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,6 +183,21 @@ pub struct UnifiedDiffText {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffHunk {
+    pub path: String,
+    pub kind: RepoDiffKind,
+    pub id: String,
+    pub header: String,
+    pub old_start: u32,
+    pub old_lines: u32,
+    pub new_start: u32,
+    pub new_lines: u32,
+    pub content: String,
+    pub content_hash: String,
+    pub file_header: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Changelist {
     pub id: String,
     pub name: String,
@@ -192,6 +209,8 @@ pub struct ChangelistState {
     pub lists: Vec<Changelist>,
     pub active_id: String,
     pub assignments: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub hunk_assignments: std::collections::HashMap<String, HunkAssignmentSet>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,6 +246,39 @@ pub struct ChangelistUnassignRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HunkAssignment {
+    pub id: String,
+    pub header: String,
+    pub old_start: u32,
+    pub old_lines: u32,
+    pub new_start: u32,
+    pub new_lines: u32,
+    pub content_hash: String,
+    pub kind: RepoDiffKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HunkAssignmentSet {
+    pub changelist_id: String,
+    pub hunks: Vec<HunkAssignment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangelistAssignHunksRequest {
+    pub repo_id: RepoId,
+    pub changelist_id: String,
+    pub path: String,
+    pub hunks: Vec<HunkAssignment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangelistUnassignHunksRequest {
+    pub repo_id: RepoId,
+    pub path: String,
+    pub hunk_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitPrepareRequest {
     pub repo_id: RepoId,
     pub changelist_id: String,
@@ -253,6 +305,8 @@ pub struct CommitPreview {
     pub files: Vec<StatusFile>,
     pub stats: RepoCounts,
     pub warnings: Vec<String>,
+    pub hunk_files: Vec<String>,
+    pub invalid_hunks: Vec<HunkAssignment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

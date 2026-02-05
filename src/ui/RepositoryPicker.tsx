@@ -2,17 +2,20 @@ import { useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   clAssignFiles,
+  clAssignHunks,
   clCreate,
   clDelete,
   clList,
   clRename,
   clSetActive,
+  clUnassignHunks,
   commitExecute,
   commitPrepare,
   repoBranches,
   repoCheckout,
   repoCreateBranch,
   repoDiff,
+  repoDiffHunks,
   repoFetch,
   repoListRecent,
   repoOpen,
@@ -26,6 +29,7 @@ import type {
   Changelist,
   ChangelistState,
   CommitPreview,
+  DiffHunk,
   RepoDiffKind,
   RepoError,
   StatusFile
@@ -44,6 +48,10 @@ export default function RepositoryPicker() {
   const [diffKind, setDiffKind] = useState<RepoDiffKind>("unstaged");
   const [diffText, setDiffText] = useState("");
   const [diffLoading, setDiffLoading] = useState(false);
+  const [diffHunks, setDiffHunks] = useState<DiffHunk[]>([]);
+  const [diffHunkError, setDiffHunkError] = useState<string | null>(null);
+  const [selectedHunkIds, setSelectedHunkIds] = useState<Set<string>>(new Set());
+  const [hunkBusy, setHunkBusy] = useState(false);
   const [branches, setBranches] = useState<BranchList | null>(null);
   const [branchBusy, setBranchBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -159,6 +167,38 @@ export default function RepositoryPicker() {
   }, [repo?.repo_id, selectedPath, diffKind]);
 
   useEffect(() => {
+    if (!repo?.repo_id || !selectedPath) {
+      setDiffHunks([]);
+      setSelectedHunkIds(new Set());
+      setDiffHunkError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setDiffHunkError(null);
+    repoDiffHunks(repo.repo_id, selectedPath, diffKind)
+      .then((next) => {
+        if (!cancelled) {
+          setDiffHunks(next);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          const message =
+            typeof error === "string"
+              ? error
+              : (error as Error)?.message ?? "Diff hunks failed.";
+          setDiffHunkError(message);
+          setDiffHunks([]);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [repo?.repo_id, selectedPath, diffKind]);
+
+  useEffect(() => {
     if (!repo?.repo_id) {
       setCommitPreview(null);
       setCommitError(null);
@@ -194,6 +234,32 @@ export default function RepositoryPicker() {
       cancelled = true;
     };
   }, [repo?.repo_id, selectedChangelistId, status]);
+
+  const activeHunkAssignment = useMemo(() => {
+    if (!selectedPath) return null;
+    return changelists?.hunk_assignments?.[selectedPath] ?? null;
+  }, [changelists, selectedPath]);
+
+  const assignedHunkIds = useMemo(() => {
+    if (!activeHunkAssignment) return new Set<string>();
+    if (activeHunkAssignment.changelist_id !== selectedChangelistId) {
+      return new Set<string>();
+    }
+    return new Set(activeHunkAssignment.hunks.map((hunk) => hunk.id));
+  }, [activeHunkAssignment, selectedChangelistId]);
+
+  const invalidAssignedHunks = useMemo(() => {
+    if (!activeHunkAssignment) return [];
+    if (activeHunkAssignment.changelist_id !== selectedChangelistId) return [];
+    const diffMap = new Map(diffHunks.map((hunk) => [hunk.id, hunk.content_hash]));
+    return activeHunkAssignment.hunks.filter(
+      (hunk) => diffMap.get(hunk.id) !== hunk.content_hash
+    );
+  }, [activeHunkAssignment, selectedChangelistId, diffHunks]);
+
+  useEffect(() => {
+    setSelectedHunkIds(new Set(assignedHunkIds));
+  }, [assignedHunkIds, diffHunks]);
 
   const handlePick = async () => {
     if (!isTauri) {
@@ -392,6 +458,74 @@ export default function RepositoryPicker() {
       setToast("Commit failed. See details in the commit panel.");
     } finally {
       setCommitBusy(false);
+    }
+  };
+
+  const toggleHunk = (id: string) => {
+    setSelectedHunkIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleAssignHunks = async () => {
+    if (!repo || !selectedPath) return;
+    const hunks = diffHunks.filter((hunk) => selectedHunkIds.has(hunk.id));
+    if (hunks.length === 0) {
+      setToast("Select hunks to assign.");
+      return;
+    }
+    setHunkBusy(true);
+    try {
+      await clAssignHunks(
+        repo.repo_id,
+        selectedChangelistId,
+        selectedPath,
+        hunks.map((hunk) => ({
+          id: hunk.id,
+          header: hunk.header,
+          old_start: hunk.old_start,
+          old_lines: hunk.old_lines,
+          new_start: hunk.new_start,
+          new_lines: hunk.new_lines,
+          content_hash: hunk.content_hash,
+          kind: hunk.kind
+        }))
+      );
+      await handleRefresh();
+      setToast("Hunks assigned.");
+    } catch (error) {
+      console.error("cl_assign_hunks failed", error);
+      setToast("Assign hunks failed.");
+    } finally {
+      setHunkBusy(false);
+    }
+  };
+
+  const handleUnassignHunks = async () => {
+    if (!repo || !selectedPath) return;
+    if (!activeHunkAssignment || activeHunkAssignment.changelist_id !== selectedChangelistId) {
+      return;
+    }
+    setHunkBusy(true);
+    try {
+      await clUnassignHunks(
+        repo.repo_id,
+        selectedPath,
+        activeHunkAssignment.hunks.map((hunk) => hunk.id)
+      );
+      await handleRefresh();
+      setToast("Hunks cleared.");
+    } catch (error) {
+      console.error("cl_unassign_hunks failed", error);
+      setToast("Clear hunks failed.");
+    } finally {
+      setHunkBusy(false);
     }
   };
 
@@ -645,6 +779,11 @@ export default function RepositoryPicker() {
                       <span className="count-pill">Unstaged {commitPreview.stats.unstaged}</span>
                       <span className="count-pill">Untracked {commitPreview.stats.untracked}</span>
                     </div>
+                    {commitPreview.invalid_hunks.length > 0 && (
+                      <div className="commit-error">
+                        Some hunks need reselect before committing.
+                      </div>
+                    )}
                     {commitPreview.warnings.length > 0 && (
                       <ul className="commit-warnings">
                         {commitPreview.warnings.map((warning) => (
@@ -666,7 +805,11 @@ export default function RepositoryPicker() {
                   className="button"
                   onClick={handleCommit}
                   disabled={
-                    commitBusy || !!commitError || !commitPreview || !commitMessage.trim()
+                    commitBusy ||
+                    !!commitError ||
+                    !commitPreview ||
+                    !commitMessage.trim() ||
+                    commitPreview.invalid_hunks.length > 0
                   }
                 >
                   {commitBusy ? "Committing…" : "Commit changelist"}
@@ -691,6 +834,9 @@ export default function RepositoryPicker() {
                         {file.path}
                       </button>
                       <span className="status-pill">{file.status}</span>
+                      {file.changelist_partial && (
+                        <span className="partial-pill">Partial</span>
+                      )}
                       <select
                         className="move-select"
                         value={file.changelist_id ?? "default"}
@@ -747,11 +893,59 @@ export default function RepositoryPicker() {
                     </div>
                   )}
                 </div>
-                <pre className="diff-output">
-                  {diffLoading
-                    ? "Loading diff..."
-                    : diffText || "No diff to display."}
-                </pre>
+                {diffHunkError && <div className="commit-error">{diffHunkError}</div>}
+                {selectedFile && (
+                  <div className="hunk-toolbar">
+                    <button
+                      className="chip"
+                      onClick={handleAssignHunks}
+                      disabled={hunkBusy || selectedHunkIds.size === 0}
+                    >
+                      Assign hunks
+                    </button>
+                    <button
+                      className="chip"
+                      onClick={handleUnassignHunks}
+                      disabled={
+                        hunkBusy ||
+                        !activeHunkAssignment ||
+                        activeHunkAssignment.changelist_id !== selectedChangelistId
+                      }
+                    >
+                      Clear hunks
+                    </button>
+                    {activeHunkAssignment &&
+                      activeHunkAssignment.changelist_id !== selectedChangelistId && (
+                        <span className="muted">Hunks assigned to another changelist.</span>
+                      )}
+                    {invalidAssignedHunks.length > 0 && (
+                      <span className="muted">Some hunks need reselect.</span>
+                    )}
+                  </div>
+                )}
+                {diffHunks.length === 0 ? (
+                  <pre className="diff-output">
+                    {diffLoading
+                      ? "Loading diff..."
+                      : diffText || "No diff to display."}
+                  </pre>
+                ) : (
+                  <div className="hunk-list">
+                    {diffHunks.map((hunk) => (
+                      <div key={hunk.id} className="hunk-card">
+                        <label className="hunk-header">
+                          <input
+                            type="checkbox"
+                            checked={selectedHunkIds.has(hunk.id)}
+                            onChange={() => toggleHunk(hunk.id)}
+                          />
+                          <span>{hunk.header}</span>
+                        </label>
+                        <pre className="hunk-content">{hunk.content}</pre>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>

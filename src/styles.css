@@ -148,6 +148,48 @@ body {
   white-space: pre-wrap;
 }
 
+.hunk-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.hunk-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hunk-card {
+  border: 1px solid #ececec;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hunk-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #1d1d1f;
+}
+
+.hunk-content {
+  margin: 0;
+  padding: 10px;
+  background: #0f1115;
+  color: #e8e8e8;
+  border-radius: 8px;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
 .changelist-panel {
   border: 1px solid #ececec;
   border-radius: 8px;
@@ -336,7 +378,7 @@ body {
 
 .file-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
   gap: 8px;
   align-items: center;
   padding: 8px;
@@ -351,6 +393,14 @@ body {
   background: #dfe3f0;
   font-size: 12px;
   text-transform: capitalize;
+}
+
+.partial-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f6e5c7;
+  font-size: 12px;
+  color: #6b4a0b;
 }
 
 .move-select {

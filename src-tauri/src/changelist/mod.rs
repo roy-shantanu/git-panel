@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-
-use crate::model::{Changelist, ChangelistState, RepoStatus, RepoSummary, StatusFile};
+use crate::model::{
+    Changelist, ChangelistState, HunkAssignment, HunkAssignmentSet, RepoStatus, RepoSummary,
+};
 use crate::store::now_ms;
 
 const DEFAULT_ID: &str = "default";
@@ -83,6 +83,9 @@ pub fn delete(summary: &RepoSummary, id: &str) -> Result<(), String> {
     let mut state = load_state(summary)?;
     state.lists.retain(|item| item.id != id);
     state.assignments.retain(|_, value| value != id);
+    state
+        .hunk_assignments
+        .retain(|_, assignment| assignment.changelist_id != id);
     if state.active_id == id {
         state.active_id = DEFAULT_ID.to_string();
     }
@@ -113,6 +116,7 @@ pub fn assign_files(
         state
             .assignments
             .insert(path.to_string(), changelist_id.to_string());
+        state.hunk_assignments.remove(path);
     }
     save_state(summary, &state)?;
     Ok(())
@@ -134,6 +138,48 @@ pub fn clear_assignments(summary: &RepoSummary, paths: &[String]) -> Result<(), 
     let mut state = load_state(summary)?;
     for path in paths {
         state.assignments.remove(path);
+        state.hunk_assignments.remove(path);
+    }
+    save_state(summary, &state)?;
+    Ok(())
+}
+
+pub fn assign_hunks(
+    summary: &RepoSummary,
+    changelist_id: &str,
+    path: &str,
+    hunks: &[HunkAssignment],
+) -> Result<(), String> {
+    if hunks.is_empty() {
+        return Err("no hunks provided".to_string());
+    }
+    let mut state = load_state(summary)?;
+    if !state.lists.iter().any(|item| item.id == changelist_id) {
+        return Err("unknown changelist id".to_string());
+    }
+    state.assignments.remove(path);
+    state.hunk_assignments.insert(
+        path.to_string(),
+        HunkAssignmentSet {
+            changelist_id: changelist_id.to_string(),
+            hunks: hunks.to_vec(),
+        },
+    );
+    save_state(summary, &state)?;
+    Ok(())
+}
+
+pub fn unassign_hunks(
+    summary: &RepoSummary,
+    path: &str,
+    hunk_ids: &[String],
+) -> Result<(), String> {
+    let mut state = load_state(summary)?;
+    if let Some(entry) = state.hunk_assignments.get_mut(path) {
+        entry.hunks.retain(|hunk| !hunk_ids.contains(&hunk.id));
+        if entry.hunks.is_empty() {
+            state.hunk_assignments.remove(path);
+        }
     }
     save_state(summary, &state)?;
     Ok(())
@@ -159,15 +205,38 @@ pub fn apply_to_status(
             }
         }
 
+        if assigned.is_none() {
+            if let Some(old) = file.old_path.as_ref() {
+                if let Some(old_hunks) = state.hunk_assignments.remove(old) {
+                    state
+                        .hunk_assignments
+                        .insert(file.path.clone(), old_hunks);
+                    rename_applied = true;
+                }
+            }
+        }
+
         if let Some(id) = assigned {
             if let Some(name) = list_map.get(&id) {
                 file.changelist_id = Some(id);
                 file.changelist_name = Some(name.clone());
+                file.changelist_partial = Some(false);
+                continue;
             }
-        } else {
-            file.changelist_id = Some(DEFAULT_ID.to_string());
-            file.changelist_name = Some(DEFAULT_NAME.to_string());
         }
+
+        if let Some(hunks) = state.hunk_assignments.get(&file.path) {
+            if let Some(name) = list_map.get(&hunks.changelist_id) {
+                file.changelist_id = Some(hunks.changelist_id.clone());
+                file.changelist_name = Some(name.clone());
+                file.changelist_partial = Some(true);
+                continue;
+            }
+        }
+
+        file.changelist_id = Some(DEFAULT_ID.to_string());
+        file.changelist_name = Some(DEFAULT_NAME.to_string());
+        file.changelist_partial = Some(false);
     }
 
     if rename_applied {
@@ -185,6 +254,7 @@ pub fn default_state() -> ChangelistState {
         }],
         active_id: DEFAULT_ID.to_string(),
         assignments: HashMap::new(),
+        hunk_assignments: HashMap::new(),
     }
 }
 
@@ -228,8 +298,8 @@ fn changelist_path(summary: &RepoSummary) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{assign_files, create, load_state};
-    use crate::model::RepoSummary;
+    use super::{assign_files, assign_hunks, create, load_state};
+    use crate::model::{HunkAssignment, RepoDiffKind, RepoSummary};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -264,6 +334,32 @@ mod tests {
             state.assignments.get("src/main.rs"),
             Some(&created.id)
         );
+
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn persists_hunk_assignments() {
+        let (summary, path) = temp_repo();
+
+        let created = create(&summary, "Feature").expect("create changelist");
+        let hunks = vec![HunkAssignment {
+            id: "1:1:1:1:deadbeef".to_string(),
+            header: "@@ -1 +1 @@".to_string(),
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 1,
+            content_hash: "deadbeef".to_string(),
+            kind: RepoDiffKind::Unstaged,
+        }];
+
+        assign_hunks(&summary, &created.id, "src/main.rs", &hunks).expect("assign hunks");
+
+        let state = load_state(&summary).expect("load state");
+        let entry = state.hunk_assignments.get("src/main.rs").expect("hunks");
+        assert_eq!(entry.changelist_id, created.id);
+        assert_eq!(entry.hunks.len(), 1);
 
         let _ = fs::remove_dir_all(path);
     }

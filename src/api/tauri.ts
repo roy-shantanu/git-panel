@@ -8,6 +8,8 @@ import type {
   CommitOptions,
   CommitPreview,
   CommitResult,
+  DiffHunk,
+  HunkAssignment,
   CheckoutResult,
   CheckoutTarget,
   FetchResult,
@@ -16,6 +18,7 @@ import type {
   RepoStatus,
   RepoStatusRequest,
   RepoSummary,
+  RepoDiffKind,
   UnifiedDiffText
 } from "../types/ipc";
 
@@ -35,6 +38,14 @@ export async function repoDiff(
   kind: RepoDiffKind
 ): Promise<UnifiedDiffText> {
   return invoke("repo_diff", { req: { repo_id, path, kind } });
+}
+
+export async function repoDiffHunks(
+  repo_id: string,
+  path: string,
+  kind: RepoDiffKind
+): Promise<DiffHunk[]> {
+  return invoke("repo_diff_hunks", { req: { repo_id, path, kind } });
 }
 
 export async function repoStage(repo_id: string, path: string): Promise<void> {
@@ -109,6 +120,23 @@ export async function clAssignFiles(
 
 export async function clUnassignFiles(repo_id: string, paths: string[]): Promise<void> {
   return invoke("cl_unassign_files", { req: { repo_id, paths } });
+}
+
+export async function clAssignHunks(
+  repo_id: string,
+  changelist_id: string,
+  path: string,
+  hunks: HunkAssignment[]
+): Promise<void> {
+  return invoke("cl_assign_hunks", { req: { repo_id, changelist_id, path, hunks } });
+}
+
+export async function clUnassignHunks(
+  repo_id: string,
+  path: string,
+  hunk_ids: string[]
+): Promise<void> {
+  return invoke("cl_unassign_hunks", { req: { repo_id, path, hunk_ids } });
 }
 
 export async function commitPrepare(

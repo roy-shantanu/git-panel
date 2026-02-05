@@ -7,10 +7,11 @@ use crate::git;
 use crate::model::{
     AppVersion, BranchCreateResult, BranchList, CheckoutResult, RepoBranchListRequest,
     RepoCheckoutRequest, RepoCreateBranchRequest, RepoDiffRequest, RepoFetchRequest, RepoOpenRequest,
-    Changelist, ChangelistAssignRequest, ChangelistCreateRequest, ChangelistIdRequest,
-    ChangelistRenameRequest, ChangelistState, ChangelistUnassignRequest, CommitExecuteRequest,
-    CommitPreview, CommitPrepareRequest, CommitResult, RepoPathRequest, RepoStatusRequest,
-    RepoSummary, UnifiedDiffText,
+    Changelist, ChangelistAssignHunksRequest, ChangelistAssignRequest, ChangelistCreateRequest,
+    ChangelistIdRequest, ChangelistRenameRequest, ChangelistState, ChangelistUnassignHunksRequest,
+    ChangelistUnassignRequest, CommitExecuteRequest, CommitPreview, CommitPrepareRequest,
+    CommitResult, DiffHunk, HunkAssignment, RepoPathRequest, RepoStatusRequest, RepoSummary,
+    UnifiedDiffText,
 };
 use crate::store::{now_ms, AppState};
 
@@ -100,6 +101,19 @@ pub async fn repo_diff(
     };
     let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
     git::diff_for_path(&summary, &req.path, req.kind)
+}
+
+#[tauri::command]
+pub async fn repo_diff_hunks(
+    req: RepoDiffRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Vec<DiffHunk>, String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    git::diff_hunks_for_path(&summary, &req.path, req.kind)
 }
 
 #[tauri::command]
@@ -310,6 +324,36 @@ pub async fn cl_unassign_files(
 }
 
 #[tauri::command]
+pub async fn cl_assign_hunks(
+    req: ChangelistAssignHunksRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    changelist::assign_hunks(&summary, &req.changelist_id, &req.path, &req.hunks)?;
+    update_cached_changelists(&summary, &state)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cl_unassign_hunks(
+    req: ChangelistUnassignHunksRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    changelist::unassign_hunks(&summary, &req.path, &req.hunk_ids)?;
+    update_cached_changelists(&summary, &state)?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn commit_prepare(
     req: CommitPrepareRequest,
     state: State<'_, Mutex<AppState>>,
@@ -334,12 +378,31 @@ pub async fn commit_execute(
     let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
 
     let preview = build_commit_preview(&summary, &req.changelist_id)?;
+    if !preview.invalid_hunks.is_empty() {
+        return Err("Some hunks need reselect before committing.".to_string());
+    }
     let options = req.options;
     let message = req.message.clone();
     let files = preview.files.clone();
+    let hunk_files = collect_hunk_files(&summary, &req.changelist_id)?;
     let summary_for_job = summary.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        git::commit_changelist(&summary_for_job, &files, &message, &options)
+        if hunk_files.is_empty() {
+            git::commit_changelist(&summary_for_job, &files, &message, &options)
+        } else {
+            let full_files: Vec<_> = files
+                .iter()
+                .filter(|file| file.changelist_partial != Some(true))
+                .cloned()
+                .collect();
+            git::commit_changelist_with_hunks(
+                &summary_for_job,
+                &full_files,
+                &hunk_files,
+                &message,
+                &options,
+            )
+        }
     })
     .await
     .map_err(|_| "commit job failed".to_string())??;
@@ -397,12 +460,21 @@ fn build_commit_preview(
         .into_iter()
         .filter(|file| file.changelist_id.as_deref() == Some(changelist_id))
         .collect();
-    preview_from_files(changelist_id, files)
+    let hunk_files = cl_state
+        .hunk_assignments
+        .iter()
+        .filter(|(_, assignment)| assignment.changelist_id == changelist_id)
+        .map(|(path, _)| path.clone())
+        .collect::<Vec<_>>();
+    preview_from_files(summary, changelist_id, files, hunk_files, &cl_state.hunk_assignments)
 }
 
 fn preview_from_files(
+    summary: &RepoSummary,
     changelist_id: &str,
     files: Vec<crate::model::StatusFile>,
+    hunk_files: Vec<String>,
+    hunk_assignments: &std::collections::HashMap<String, crate::model::HunkAssignmentSet>,
 ) -> Result<CommitPreview, String> {
     if files.is_empty() {
         return Err("Changelist has no files.".to_string());
@@ -419,6 +491,11 @@ fn preview_from_files(
     };
     let mut warnings = Vec::new();
     let mut has_mixed = false;
+    let mut invalid_hunks: Vec<HunkAssignment> = Vec::new();
+    let file_status: std::collections::HashMap<String, crate::model::StatusKind> = files
+        .iter()
+        .map(|file| (file.path.clone(), file.status.clone()))
+        .collect();
 
     for file in &files {
         match file.status {
@@ -434,6 +511,45 @@ fn preview_from_files(
         }
     }
 
+    for (path, assignment) in hunk_assignments {
+        if assignment.changelist_id != changelist_id {
+            continue;
+        }
+        if let Some(status) = file_status.get(path) {
+            if assignment
+                .hunks
+                .iter()
+                .any(|hunk| hunk.kind == crate::model::RepoDiffKind::Unstaged)
+                && matches!(
+                    status,
+                    crate::model::StatusKind::Staged | crate::model::StatusKind::Both
+                )
+            {
+                invalid_hunks.extend(assignment.hunks.clone());
+                warnings.push(
+                    "Unstaged hunks cannot be committed while staged changes exist in the same file."
+                        .to_string(),
+                );
+                continue;
+            }
+        }
+
+        let mut invalid_for_file = Vec::new();
+        for hunk in &assignment.hunks {
+            let hunks = git::diff_hunks_for_path(summary, path, hunk.kind.clone())?;
+            let found = hunks
+                .iter()
+                .any(|diff| diff.id == hunk.id && diff.content_hash == hunk.content_hash);
+            if !found {
+                invalid_for_file.push(hunk.clone());
+            }
+        }
+        if !invalid_for_file.is_empty() {
+            invalid_hunks.extend(invalid_for_file);
+            warnings.push("Some hunks no longer match the file. Reselect required.".to_string());
+        }
+    }
+
     if has_mixed {
         warnings.push(
             "Some files have both staged and unstaged changes; the commit will use the working tree version.".to_string(),
@@ -445,13 +561,30 @@ fn preview_from_files(
         files,
         stats,
         warnings,
+        hunk_files,
+        invalid_hunks,
     })
+}
+
+fn collect_hunk_files(
+    summary: &RepoSummary,
+    changelist_id: &str,
+) -> Result<Vec<(String, Vec<HunkAssignment>)>, String> {
+    let state = changelist::load_state(summary)?;
+    let mut result = Vec::new();
+    for (path, assignment) in state.hunk_assignments {
+        if assignment.changelist_id != changelist_id {
+            continue;
+        }
+        result.push((path, assignment.hunks));
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::preview_from_files;
-    use crate::model::{StatusFile, StatusKind};
+    use crate::model::{HunkAssignmentSet, RepoSummary, StatusFile, StatusKind};
 
     #[test]
     fn preview_rejects_conflicts() {
@@ -461,9 +594,22 @@ mod tests {
             old_path: None,
             changelist_id: Some("default".to_string()),
             changelist_name: Some("Default".to_string()),
+            changelist_partial: None,
         }];
 
-        let result = preview_from_files("default", files);
+        let summary = RepoSummary {
+            repo_id: "test".to_string(),
+            path: "test".to_string(),
+            name: "test".to_string(),
+            is_valid: true,
+        };
+        let result = preview_from_files(
+            &summary,
+            "default",
+            files,
+            Vec::new(),
+            &std::collections::HashMap::<String, HunkAssignmentSet>::new(),
+        );
         assert!(result.is_err());
     }
 
@@ -476,6 +622,7 @@ mod tests {
                 old_path: None,
                 changelist_id: Some("default".to_string()),
                 changelist_name: Some("Default".to_string()),
+                changelist_partial: None,
             },
             StatusFile {
                 path: "src/b.rs".to_string(),
@@ -483,10 +630,24 @@ mod tests {
                 old_path: None,
                 changelist_id: Some("default".to_string()),
                 changelist_name: Some("Default".to_string()),
+                changelist_partial: None,
             },
         ];
 
-        let preview = preview_from_files("default", files).expect("preview");
+        let summary = RepoSummary {
+            repo_id: "test".to_string(),
+            path: "test".to_string(),
+            name: "test".to_string(),
+            is_valid: true,
+        };
+        let preview = preview_from_files(
+            &summary,
+            "default",
+            files,
+            Vec::new(),
+            &std::collections::HashMap::<String, HunkAssignmentSet>::new(),
+        )
+        .expect("preview");
         assert_eq!(preview.stats.staged, 1);
         assert_eq!(preview.stats.untracked, 1);
     }

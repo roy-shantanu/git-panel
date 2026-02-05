@@ -11,8 +11,8 @@ use git2::{
 
 use crate::model::{
     BranchList, CheckoutResult, CheckoutTarget, CheckoutTargetKind, CommitOptions, CommitResult,
-    RepoCounts, RepoDiffKind, RepoError, RepoHead, RepoId, RepoStatus, RepoSummary, StatusFile,
-    StatusKind, UnifiedDiffText,
+    DiffHunk, HunkAssignment, RepoCounts, RepoDiffKind, RepoError, RepoHead, RepoId, RepoStatus,
+    RepoSummary, StatusFile, StatusKind, UnifiedDiffText,
 };
 
 pub fn commit_changelist(
@@ -107,6 +107,113 @@ pub fn commit_changelist(
     })
 }
 
+pub fn commit_changelist_with_hunks(
+    summary: &RepoSummary,
+    full_files: &[StatusFile],
+    hunk_files: &[(String, Vec<HunkAssignment>)],
+    message: &str,
+    options: &CommitOptions,
+) -> Result<CommitResult, String> {
+    if full_files.is_empty() && hunk_files.is_empty() {
+        return Err("No files to commit.".to_string());
+    }
+    if message.trim().is_empty() {
+        return Err("Commit message is required.".to_string());
+    }
+
+    let repo = Repository::open(&summary.path).map_err(|e| e.to_string())?;
+    let git_dir = repo.path();
+    let tmp_dir = git_dir.join("gitpanel").join("tmp");
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "clock error".to_string())?
+        .as_millis();
+    let index_path = tmp_dir.join(format!("index-{millis}"));
+
+    let head_oid = run_git(&summary.path, &["rev-parse", "--verify", "HEAD"], None).ok();
+    let head_oid = head_oid.map(|value| value.trim().to_string());
+
+    let index_env = Some(("GIT_INDEX_FILE", index_path.to_string_lossy().to_string()));
+
+    if head_oid.is_some() {
+        run_git(&summary.path, &["read-tree", "HEAD"], index_env.as_ref())?;
+    } else {
+        run_git(
+            &summary.path,
+            &["read-tree", "--empty"],
+            index_env.as_ref(),
+        )?;
+    }
+
+    if !full_files.is_empty() {
+        let mut args = vec!["add", "-A", "--"];
+        for file in full_files {
+            if matches!(file.status, StatusKind::Conflicted) {
+                return Err("Changelist contains conflicted files.".to_string());
+            }
+            args.push(&file.path);
+        }
+        run_git(&summary.path, &args, index_env.as_ref())?;
+    }
+
+    for (path, hunks) in hunk_files {
+        let patch = build_hunk_patch(summary, path, hunks)?;
+        let patch_path = tmp_dir.join(format!("patch-{millis}-{}.diff", sanitize_path(path)));
+        std::fs::write(&patch_path, patch).map_err(|e| e.to_string())?;
+        let patch_path_str = patch_path.to_string_lossy().to_string();
+        let args = ["apply", "--cached", patch_path_str.as_str()];
+        run_git(&summary.path, &args, index_env.as_ref())?;
+        let _ = std::fs::remove_file(&patch_path);
+    }
+
+    let tree_oid = run_git(&summary.path, &["write-tree"], index_env.as_ref())?;
+    let tree_oid = tree_oid.trim();
+
+    let commit_oid = if options.amend {
+        let head_oid = head_oid
+            .clone()
+            .ok_or_else(|| "Cannot amend without existing commits.".to_string())?;
+        let parents_line =
+            run_git(&summary.path, &["rev-list", "--parents", "-n", "1", "HEAD"], None)?;
+        let mut parts = parents_line.split_whitespace();
+        let _ = parts.next();
+        let parents: Vec<&str> = parts.collect();
+
+        let mut commit_args = vec!["commit-tree", tree_oid, "-m", message];
+        for parent in parents {
+            commit_args.push("-p");
+            commit_args.push(parent);
+        }
+        let new_oid = run_git(&summary.path, &commit_args, None)?;
+        update_ref(&summary.path, &head_oid, new_oid.trim())?;
+        new_oid.trim().to_string()
+    } else if let Some(head_oid) = head_oid.clone() {
+        let commit_args = ["commit-tree", tree_oid, "-m", message, "-p", head_oid.as_str()];
+        let new_oid = run_git(&summary.path, &commit_args, None)?;
+        update_ref(&summary.path, &head_oid, new_oid.trim())?;
+        new_oid.trim().to_string()
+    } else {
+        let commit_args = ["commit-tree", tree_oid, "-m", message];
+        let new_oid = run_git(&summary.path, &commit_args, None)?;
+        update_ref(&summary.path, "", new_oid.trim())?;
+        new_oid.trim().to_string()
+    };
+
+    let _ = std::fs::remove_file(&index_path);
+
+    let head = repo_head(&repo)?;
+    let mut committed_paths: Vec<String> =
+        full_files.iter().map(|file| file.path.clone()).collect();
+    committed_paths.extend(hunk_files.iter().map(|(path, _)| path.clone()));
+
+    Ok(CommitResult {
+        head,
+        commit_id: commit_oid,
+        committed_paths,
+    })
+}
+
 fn run_git(
     repo_path: &str,
     args: &[&str],
@@ -129,6 +236,59 @@ fn run_git(
         });
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn build_hunk_patch(
+    summary: &RepoSummary,
+    path: &str,
+    hunks: &[HunkAssignment],
+) -> Result<String, String> {
+    if hunks.is_empty() {
+        return Err("no hunks provided".to_string());
+    }
+
+    let kind = hunks[0].kind.clone();
+    if hunks.iter().any(|h| h.kind != kind) {
+        return Err("mixed hunk kinds not supported for one file".to_string());
+    }
+
+    let all_hunks = diff_hunks_for_path(summary, path, kind)?;
+    let mut lookup = std::collections::HashMap::new();
+    for hunk in all_hunks {
+        lookup.insert(hunk.id.clone(), hunk);
+    }
+
+    let mut file_header = String::new();
+    let mut patch = String::new();
+    for hunk in hunks {
+        let diff = lookup
+            .get(&hunk.id)
+            .ok_or_else(|| format!("hunk {} not found", hunk.id))?;
+        if diff.content_hash != hunk.content_hash {
+            return Err("hunk content changed; reselect required".to_string());
+        }
+        if file_header.is_empty() {
+            file_header = diff.file_header.clone();
+            if !file_header.ends_with('\n') {
+                file_header.push('\n');
+            }
+            patch.push_str(&file_header);
+        }
+        patch.push_str(&diff.header);
+        patch.push('\n');
+        patch.push_str(&diff.content);
+        if !diff.content.ends_with('\n') {
+            patch.push('\n');
+        }
+    }
+
+    Ok(patch)
+}
+
+fn sanitize_path(path: &str) -> String {
+    path.chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect()
 }
 
 fn update_ref(repo_path: &str, old_oid: &str, new_oid: &str) -> Result<(), String> {
@@ -227,6 +387,7 @@ pub fn status(summary: &RepoSummary) -> Result<RepoStatus, String> {
                 old_path,
                 changelist_id: None,
                 changelist_name: None,
+                changelist_partial: None,
             });
         }
     }
@@ -278,6 +439,15 @@ pub fn diff_for_path(
     Ok(UnifiedDiffText { text })
 }
 
+pub fn diff_hunks_for_path(
+    summary: &RepoSummary,
+    path: &str,
+    kind: RepoDiffKind,
+) -> Result<Vec<DiffHunk>, String> {
+    let diff = diff_for_path(summary, path, kind.clone())?;
+    Ok(parse_diff_hunks(&diff.text, path, kind))
+}
+
 pub fn stage_path(summary: &RepoSummary, path: &str) -> Result<(), String> {
     let repo = Repository::open(&summary.path).map_err(|e| e.to_string())?;
     let mut index = repo.index().map_err(|e| e.to_string())?;
@@ -313,7 +483,7 @@ pub fn list_branches(summary: &RepoSummary) -> Result<BranchList, String> {
     let mut locals = Vec::new();
     let mut remotes = Vec::new();
 
-    if let Ok(mut iter) = repo.branches(Some(BranchType::Local)) {
+    if let Ok(iter) = repo.branches(Some(BranchType::Local)) {
         for item in iter.flatten() {
             if let Ok(Some(name)) = item.0.name() {
                 locals.push(name.to_string());
@@ -321,7 +491,7 @@ pub fn list_branches(summary: &RepoSummary) -> Result<BranchList, String> {
         }
     }
 
-    if let Ok(mut iter) = repo.branches(Some(BranchType::Remote)) {
+    if let Ok(iter) = repo.branches(Some(BranchType::Remote)) {
         for item in iter.flatten() {
             if let Ok(Some(name)) = item.0.name() {
                 remotes.push(name.to_string());
@@ -484,6 +654,156 @@ fn extract_paths(entry: &git2::StatusEntry) -> (Option<String>, Option<String>) 
         path.map(|p| p.to_string_lossy().to_string()),
         old_path.map(|p| p.to_string_lossy().to_string()),
     )
+}
+
+fn parse_diff_hunks(diff_text: &str, default_path: &str, kind: RepoDiffKind) -> Vec<DiffHunk> {
+    let mut hunks = Vec::new();
+    let lines: Vec<&str> = diff_text.lines().collect();
+    let mut i = 0;
+    let mut file_header: Vec<String> = Vec::new();
+    let mut current_path: Option<String> = None;
+
+    while i < lines.len() {
+        let line = lines[i];
+        if line.starts_with("diff --git ") {
+            file_header.clear();
+            file_header.push(line.to_string());
+            current_path = extract_b_path(line);
+            i += 1;
+            continue;
+        }
+
+        if line.starts_with("@@ ") {
+            let header = line.to_string();
+            let (old_start, old_lines, new_start, new_lines) = parse_hunk_header(line);
+            let mut content_lines: Vec<String> = Vec::new();
+            i += 1;
+            while i < lines.len() {
+                let next = lines[i];
+                if next.starts_with("diff --git ") || next.starts_with("@@ ") {
+                    break;
+                }
+                content_lines.push(next.to_string());
+                i += 1;
+            }
+            let content = content_lines.join("\n");
+            let content_hash = hash_content(&content);
+            let id = format!(
+                "{}:{}:{}:{}:{}",
+                old_start, old_lines, new_start, new_lines, content_hash
+            );
+            let file_header_text = file_header.join("\n");
+            let path = current_path
+                .clone()
+                .unwrap_or_else(|| default_path.to_string());
+            hunks.push(DiffHunk {
+                path,
+                kind: kind.clone(),
+                id,
+                header,
+                old_start,
+                old_lines,
+                new_start,
+                new_lines,
+                content,
+                content_hash,
+                file_header: file_header_text,
+            });
+            continue;
+        }
+
+        if line.starts_with("index ")
+            || line.starts_with("--- ")
+            || line.starts_with("+++ ")
+            || line.starts_with("new file mode")
+            || line.starts_with("deleted file mode")
+            || line.starts_with("similarity index")
+            || line.starts_with("rename from")
+            || line.starts_with("rename to")
+        {
+            file_header.push(line.to_string());
+        }
+
+        i += 1;
+    }
+
+    hunks
+}
+
+fn extract_b_path(line: &str) -> Option<String> {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() >= 4 {
+        let b = parts[3];
+        return Some(b.trim_start_matches("b/").to_string());
+    }
+    None
+}
+
+fn parse_hunk_header(line: &str) -> (u32, u32, u32, u32) {
+    let header = line.trim_start_matches("@@ ").trim_end_matches("@@");
+    let mut parts = header.split(" @@").next().unwrap_or("").split_whitespace();
+    let old_part = parts.next().unwrap_or("-0");
+    let new_part = parts.next().unwrap_or("+0");
+    let (old_start, old_lines) = parse_range(old_part.trim_start_matches('-'));
+    let (new_start, new_lines) = parse_range(new_part.trim_start_matches('+'));
+    (old_start, old_lines, new_start, new_lines)
+}
+
+fn parse_range(text: &str) -> (u32, u32) {
+    let mut parts = text.split(',');
+    let start = parts
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    let lines = parts
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(1);
+    (start, lines)
+}
+
+fn hash_content(text: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_diff_hunks, RepoDiffKind};
+
+    #[test]
+    fn hunk_id_changes_with_content() {
+        let diff = "\
+diff --git a/foo.txt b/foo.txt\n\
+index 1111111..2222222 100644\n\
+--- a/foo.txt\n\
++++ b/foo.txt\n\
+@@ -1,2 +1,2 @@\n\
+-hello\n\
++hello world\n\
+ line2\n";
+
+        let hunks = parse_diff_hunks(diff, "foo.txt", RepoDiffKind::Unstaged);
+        assert_eq!(hunks.len(), 1);
+        let first_id = hunks[0].id.clone();
+
+        let diff_changed = "\
+diff --git a/foo.txt b/foo.txt\n\
+index 1111111..2222222 100644\n\
+--- a/foo.txt\n\
++++ b/foo.txt\n\
+@@ -1,2 +1,2 @@\n\
+-hello\n\
++hello brave world\n\
+ line2\n";
+        let hunks_changed = parse_diff_hunks(diff_changed, "foo.txt", RepoDiffKind::Unstaged);
+        assert_eq!(hunks_changed.len(), 1);
+        assert_ne!(first_id, hunks_changed[0].id);
+    }
 }
 
 fn is_workdir_dirty(repo: &Repository) -> bool {

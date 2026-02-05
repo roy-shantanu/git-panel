@@ -73,6 +73,7 @@ export interface StatusFile {
   old_path?: string;
   changelist_id?: string;
   changelist_name?: string;
+  changelist_partial?: boolean;
 }
 
 export type StatusKind =
@@ -97,6 +98,20 @@ export interface UnifiedDiffText {
   text: string;
 }
 
+export interface DiffHunk {
+  path: string;
+  kind: RepoDiffKind;
+  id: string;
+  header: string;
+  old_start: number;
+  old_lines: number;
+  new_start: number;
+  new_lines: number;
+  content: string;
+  content_hash: string;
+  file_header: string;
+}
+
 export interface Changelist {
   id: string;
   name: string;
@@ -107,6 +122,7 @@ export interface ChangelistState {
   lists: Changelist[];
   active_id: string;
   assignments: Record<string, string>;
+  hunk_assignments: Record<string, HunkAssignmentSet>;
 }
 
 export interface ChangelistCreateRequest {
@@ -136,6 +152,35 @@ export interface ChangelistUnassignRequest {
   paths: string[];
 }
 
+export interface HunkAssignment {
+  id: string;
+  header: string;
+  old_start: number;
+  old_lines: number;
+  new_start: number;
+  new_lines: number;
+  content_hash: string;
+  kind: RepoDiffKind;
+}
+
+export interface HunkAssignmentSet {
+  changelist_id: string;
+  hunks: HunkAssignment[];
+}
+
+export interface ChangelistAssignHunksRequest {
+  repo_id: RepoId;
+  changelist_id: string;
+  path: string;
+  hunks: HunkAssignment[];
+}
+
+export interface ChangelistUnassignHunksRequest {
+  repo_id: RepoId;
+  path: string;
+  hunk_ids: string[];
+}
+
 export interface CommitPrepareRequest {
   repo_id: RepoId;
   changelist_id: string;
@@ -157,6 +202,8 @@ export interface CommitPreview {
   files: StatusFile[];
   stats: RepoCounts;
   warnings: string[];
+  hunk_files: string[];
+  invalid_hunks: HunkAssignment[];
 }
 
 export interface CommitResult {
