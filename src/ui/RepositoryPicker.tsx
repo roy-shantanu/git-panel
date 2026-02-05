@@ -1566,26 +1566,33 @@ export default function RepositoryPicker() {
                     <ul className="changelist-list">
                 <li className="changelist-item changelist-item--staged">
                   <div className="changelist-row">
+                    <div className="changelist-row-main">
+                      <button
+                        className={`collapse-toggle ${
+                          collapsedChangelists.has(STAGED_LIST_ID) ? "" : "open"
+                        }`}
+                        onClick={() => toggleChangelistCollapse(STAGED_LIST_ID)}
+                        aria-label={
+                          collapsedChangelists.has(STAGED_LIST_ID)
+                            ? "Expand staged list"
+                            : "Collapse staged list"
+                        }
+                        aria-expanded={!collapsedChangelists.has(STAGED_LIST_ID)}
+                      >
+                        ▶
+                      </button>
+                      <button
+                        type="button"
+                        className="changelist-link staged"
+                        onClick={() => toggleChangelistCollapse(STAGED_LIST_ID)}
+                      >
+                        Staged
+                        <span className="count-pill">{stagedFiles.length}</span>
+                      </button>
+                    </div>
+                    <div className="changelist-row-actions">
                     <button
-                      className={`collapse-toggle ${
-                        collapsedChangelists.has(STAGED_LIST_ID) ? "" : "open"
-                      }`}
-                      onClick={() => toggleChangelistCollapse(STAGED_LIST_ID)}
-                      aria-label={
-                        collapsedChangelists.has(STAGED_LIST_ID)
-                          ? "Expand staged list"
-                          : "Collapse staged list"
-                      }
-                      aria-expanded={!collapsedChangelists.has(STAGED_LIST_ID)}
-                    >
-                      ▶
-                    </button>
-                    <span className="changelist-link staged">Staged</span>
-                    <span className="count-pill">{stagedFiles.length}</span>
-                  </div>
-                  <div className="changelist-actions">
-                    <button
-                      className="button"
+                      className="button tiny"
                       onClick={() => {
                         if (commitPreview) {
                           setCommitSelection(
@@ -1604,6 +1611,7 @@ export default function RepositoryPicker() {
                     >
                       {commitBusy ? "Committing…" : "Commit"}
                     </button>
+                    </div>
                   </div>
                   {!collapsedChangelists.has(STAGED_LIST_ID) && (
                     <ul className="changelist-files">
@@ -1662,35 +1670,43 @@ export default function RepositoryPicker() {
                   return (
                     <li key={list.id} className="changelist-item">
                       <div className="changelist-row">
-                        <button
-                          className={`collapse-toggle ${isCollapsed ? "" : "open"}`}
-                          onClick={() => toggleChangelistCollapse(list.id)}
-                          aria-label={
-                            isCollapsed ? "Expand changelist" : "Collapse changelist"
-                          }
-                          aria-expanded={!isCollapsed}
-                        >
-                          ▶
-                        </button>
-                        <button
-                          className={`changelist-link ${
-                            selectedChangelistId === list.id ? "active" : ""
-                          }`}
-                          onClick={() => setSelectedChangelistId(list.id)}
-                        >
-                          {list.name}
-                        </button>
-                        <span className="count-pill">{count}</span>
-                        {isActive ? (
-                          <span className="active-pill">Active</span>
-                        ) : (
+                        <div className="changelist-row-main">
                           <button
-                            className="chip"
-                            onClick={() => handleSetActiveChangelist(list.id)}
+                            className={`collapse-toggle ${isCollapsed ? "" : "open"}`}
+                            onClick={() => toggleChangelistCollapse(list.id)}
+                            aria-label={
+                              isCollapsed ? "Expand changelist" : "Collapse changelist"
+                            }
+                            aria-expanded={!isCollapsed}
                           >
-                            Set Active
+                            ▶
                           </button>
-                        )}
+                          <button
+                            type="button"
+                            className={`changelist-link ${
+                              selectedChangelistId === list.id ? "active" : ""
+                            }`}
+                            onClick={() => {
+                              setSelectedChangelistId(list.id);
+                              toggleChangelistCollapse(list.id);
+                            }}
+                          >
+                            {list.name}
+                            <span className="count-pill">{count}</span>
+                          </button>
+                        </div>
+                        <div className="changelist-row-actions">
+                          {isActive ? (
+                            <span className="active-pill">Active</span>
+                          ) : (
+                            <button
+                              className="chip"
+                              onClick={() => handleSetActiveChangelist(list.id)}
+                            >
+                              Set Active
+                            </button>
+                          )}
+                        </div>
                       </div>
                       {list.id !== "default" && (
                         <div className="changelist-actions">

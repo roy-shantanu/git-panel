@@ -381,6 +381,12 @@ body {
   border: 1px solid var(--border);
 } 
 
+.button.tiny {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+}
+
 .button:hover:not(:disabled) {
   filter: brightness(1.03);
 }
@@ -702,6 +708,22 @@ body {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  width: 100%;
+}
+
+.changelist-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.changelist-row-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .collapse-toggle {
@@ -752,7 +774,7 @@ body {
 }
 
 .changelist-link.staged {
-  cursor: default;
+  cursor: pointer;
   font-weight: 600;
 }
 
