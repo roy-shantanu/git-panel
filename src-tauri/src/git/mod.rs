@@ -14,6 +14,7 @@ use crate::model::{
     DiffHunk, HunkAssignment, RepoCounts, RepoDiffKind, RepoError, RepoHead, RepoId, RepoStatus,
     RepoSummary, StatusFile, StatusKind, UnifiedDiffText,
 };
+use crate::model::{WorktreeInfo, WorktreeList, WorktreeResult};
 
 pub fn commit_changelist(
     summary: &RepoSummary,
@@ -317,13 +318,44 @@ pub fn open_repo(path: &str) -> RepoSummary {
         .unwrap_or("Unknown")
         .to_string();
 
-    let is_valid = Path::new(path).join(".git").exists();
+    let repo_root = run_git(path, &["rev-parse", "--show-toplevel"], None)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .unwrap_or_else(|| path.to_string());
+
+    let worktree_path = repo_root.clone();
+
+    let is_valid = Path::new(path).join(".git").exists()
+        || Path::new(path).join(".git").is_file()
+        || Path::new(&repo_root).join(".git").exists();
     RepoSummary {
-        repo_id: repo_id_for_path(path),
+        repo_id: repo_id_for_path(&worktree_path),
         path: path.to_string(),
         name,
+        repo_root,
+        worktree_path,
         is_valid,
     }
+}
+
+pub fn resolve_git_dir(worktree_path: &str) -> PathBuf {
+    let dot_git = Path::new(worktree_path).join(".git");
+    if dot_git.is_dir() {
+        return dot_git;
+    }
+    if dot_git.is_file() {
+        if let Ok(content) = std::fs::read_to_string(&dot_git) {
+            if let Some(rest) = content.trim().strip_prefix("gitdir:") {
+                let git_dir = rest.trim();
+                let git_path = Path::new(git_dir);
+                if git_path.is_absolute() {
+                    return git_path.to_path_buf();
+                }
+                return Path::new(worktree_path).join(git_path);
+            }
+        }
+    }
+    dot_git
 }
 
 pub fn status(summary: &RepoSummary) -> Result<RepoStatus, String> {
@@ -446,6 +478,14 @@ pub fn diff_hunks_for_path(
 ) -> Result<Vec<DiffHunk>, String> {
     let diff = diff_for_path(summary, path, kind.clone())?;
     Ok(parse_diff_hunks(&diff.text, path, kind))
+}
+
+pub fn diff_hunks_from_text(
+    diff_text: &str,
+    path: &str,
+    kind: RepoDiffKind,
+) -> Vec<DiffHunk> {
+    parse_diff_hunks(diff_text, path, kind)
 }
 
 pub fn stage_path(summary: &RepoSummary, path: &str) -> Result<(), String> {
@@ -576,7 +616,85 @@ pub fn fetch(summary: &RepoSummary, remote: Option<&str>) -> Result<bool, String
     Ok(true)
 }
 
-fn repo_id_for_path(path: &str) -> RepoId {
+pub fn list_worktrees(repo_root: &str) -> Result<WorktreeList, String> {
+    let output = run_git(repo_root, &["worktree", "list", "--porcelain"], None)?;
+    let mut worktrees = Vec::new();
+    let mut current_path = None;
+    let mut current_head = None;
+    let mut current_branch = None;
+
+    for line in output.lines() {
+        if line.starts_with("worktree ") {
+            if let Some(path) = current_path.take() {
+                worktrees.push(WorktreeInfo {
+                    path,
+                    head: current_head.take().unwrap_or_else(|| "unknown".to_string()),
+                    branch: current_branch.take().unwrap_or_else(|| "DETACHED".to_string()),
+                });
+            }
+            current_path = Some(line.trim_start_matches("worktree ").trim().to_string());
+        } else if line.starts_with("HEAD ") {
+            current_head = Some(line.trim_start_matches("HEAD ").trim().to_string());
+        } else if line.starts_with("branch ") {
+            let branch = line.trim_start_matches("branch ").trim().to_string();
+            current_branch = Some(branch.trim_start_matches("refs/heads/").to_string());
+        }
+    }
+
+    if let Some(path) = current_path.take() {
+        worktrees.push(WorktreeInfo {
+            path,
+            head: current_head.take().unwrap_or_else(|| "unknown".to_string()),
+            branch: current_branch.take().unwrap_or_else(|| "DETACHED".to_string()),
+        });
+    }
+
+    Ok(WorktreeList {
+        repo_root: repo_root.to_string(),
+        worktrees,
+    })
+}
+
+pub fn add_worktree(
+    repo_root: &str,
+    path: &str,
+    branch_name: &str,
+    new_branch: bool,
+) -> Result<WorktreeResult, String> {
+    let mut args = vec!["worktree", "add"];
+    if new_branch {
+        args.push("-b");
+        args.push(branch_name);
+        args.push(path);
+        args.push("HEAD");
+    } else {
+        args.push(path);
+        args.push(branch_name);
+    }
+    run_git(repo_root, &args, None)?;
+    Ok(WorktreeResult {
+        ok: true,
+        message: "worktree added".to_string(),
+    })
+}
+
+pub fn remove_worktree(repo_root: &str, path: &str) -> Result<WorktreeResult, String> {
+    run_git(repo_root, &["worktree", "remove", path], None)?;
+    Ok(WorktreeResult {
+        ok: true,
+        message: "worktree removed".to_string(),
+    })
+}
+
+pub fn prune_worktrees(repo_root: &str) -> Result<WorktreeResult, String> {
+    run_git(repo_root, &["worktree", "prune"], None)?;
+    Ok(WorktreeResult {
+        ok: true,
+        message: "worktrees pruned".to_string(),
+    })
+}
+
+pub fn repo_id_for_path(path: &str) -> RepoId {
     let mut hasher = DefaultHasher::new();
     path.hash(&mut hasher);
     format!("{:x}", hasher.finish())
@@ -728,6 +846,33 @@ fn parse_diff_hunks(diff_text: &str, default_path: &str, kind: RepoDiffKind) -> 
     }
 
     hunks
+}
+
+pub fn diff_cache_key(
+    summary: &RepoSummary,
+    path: &str,
+    kind: RepoDiffKind,
+) -> Result<String, String> {
+    let old_oid = match kind {
+        RepoDiffKind::Staged => run_git(&summary.path, &["rev-parse", &format!("HEAD:{path}")], None)
+            .ok(),
+        RepoDiffKind::Unstaged => {
+            run_git(&summary.path, &["rev-parse", &format!(":{path}")], None).ok()
+        }
+    };
+
+    let new_oid = match kind {
+        RepoDiffKind::Staged => run_git(&summary.path, &["rev-parse", &format!(":{path}")], None)
+            .ok(),
+        RepoDiffKind::Unstaged => run_git(&summary.path, &["hash-object", path], None).ok(),
+    };
+
+    let old_oid = old_oid.map(|value| value.trim().to_string()).unwrap_or_else(|| "none".to_string());
+    let new_oid = new_oid.map(|value| value.trim().to_string()).unwrap_or_else(|| "none".to_string());
+    Ok(format!(
+        "{}:{}:{}:{}",
+        summary.repo_id, path, old_oid, new_oid
+    ))
 }
 
 fn extract_b_path(line: &str) -> Option<String> {

@@ -45,6 +45,8 @@ export interface RepoSummary {
   repo_id: RepoId;
   path: string;
   name: string;
+  repo_root: string;
+  worktree_path: string;
   is_valid: boolean;
 }
 
@@ -210,6 +212,44 @@ export interface CommitResult {
   head: RepoHead;
   commit_id: string;
   committed_paths: string[];
+}
+
+export interface RepoContext {
+  repo_root: string;
+  worktree_path: string;
+}
+
+export interface WorktreeInfo {
+  path: string;
+  branch: string;
+  head: string;
+}
+
+export interface WorktreeList {
+  repo_root: string;
+  worktrees: WorktreeInfo[];
+}
+
+export interface WorktreeAddRequest {
+  repo_root: string;
+  path: string;
+  branch_name: string;
+  new_branch?: boolean;
+}
+
+export interface WorktreePathRequest {
+  repo_root: string;
+  path: string;
+}
+
+export interface WorktreeResult {
+  ok: boolean;
+  message: string;
+}
+
+export interface RepoOpenWorktreeRequest {
+  repo_root: string;
+  worktree_path: string;
 }
 
 export interface BranchList {

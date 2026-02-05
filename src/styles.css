@@ -161,6 +161,14 @@ body {
   gap: 10px;
 }
 
+.hunk-list-virtual {
+  border: 1px solid #ececec;
+  border-radius: 8px;
+  background: #ffffff;
+  overflow: auto;
+  padding: 8px;
+}
+
 .hunk-card {
   border: 1px solid #ececec;
   border-radius: 8px;
@@ -376,6 +384,14 @@ body {
   gap: 8px;
 }
 
+.file-list-virtual {
+  border: 1px solid #ececec;
+  border-radius: 8px;
+  background: #fafafa;
+  overflow: auto;
+  padding: 8px;
+}
+
 .file-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto auto auto;
@@ -385,6 +401,7 @@ body {
   border: 1px solid #ececec;
   border-radius: 8px;
   background: #fafafa;
+  margin-bottom: 8px;
 }
 
 .status-pill {

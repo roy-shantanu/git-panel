@@ -63,6 +63,8 @@ pub struct RepoSummary {
     pub repo_id: RepoId,
     pub path: String,
     pub name: String,
+    pub repo_root: String,
+    pub worktree_path: String,
     pub is_valid: bool,
 }
 
@@ -314,4 +316,50 @@ pub struct CommitResult {
     pub head: RepoHead,
     pub commit_id: String,
     pub committed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoContext {
+    pub repo_root: String,
+    pub worktree_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeInfo {
+    pub path: String,
+    pub branch: String,
+    pub head: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeList {
+    pub repo_root: String,
+    pub worktrees: Vec<WorktreeInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeAddRequest {
+    pub repo_root: String,
+    pub path: String,
+    pub branch_name: String,
+    #[serde(default)]
+    pub new_branch: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreePathRequest {
+    pub repo_root: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeResult {
+    pub ok: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoOpenWorktreeRequest {
+    pub repo_root: String,
+    pub worktree_path: String,
 }

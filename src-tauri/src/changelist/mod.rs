@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+use crate::git::resolve_git_dir;
 use crate::model::{
     Changelist, ChangelistState, HunkAssignment, HunkAssignmentSet, RepoStatus, RepoSummary,
 };
@@ -290,10 +291,8 @@ fn list_map(state: &ChangelistState) -> HashMap<String, String> {
 }
 
 fn changelist_path(summary: &RepoSummary) -> PathBuf {
-    Path::new(&summary.path)
-        .join(".git")
-        .join("gitpanel")
-        .join("changelists.json")
+    let git_dir = resolve_git_dir(&summary.worktree_path);
+    git_dir.join("gitpanel").join("changelists.json")
 }
 
 #[cfg(test)]
@@ -315,6 +314,8 @@ mod tests {
             repo_id: "test-repo".to_string(),
             path: path.to_string_lossy().to_string(),
             name: "test".to_string(),
+            repo_root: path.to_string_lossy().to_string(),
+            worktree_path: path.to_string_lossy().to_string(),
             is_valid: true,
         };
         (summary, path)

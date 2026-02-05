@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import {
   clAssignFiles,
   clAssignHunks,
@@ -19,9 +20,14 @@ import {
   repoFetch,
   repoListRecent,
   repoOpen,
+  repoOpenWorktree,
   repoStage,
   repoStatus,
-  repoUnstage
+  repoUnstage,
+  wtAdd,
+  wtList,
+  wtPrune,
+  wtRemove
 } from "../api/tauri";
 import { useAppStore } from "../state/store";
 import type {
@@ -32,10 +38,10 @@ import type {
   DiffHunk,
   RepoDiffKind,
   RepoError,
-  StatusFile
+  StatusFile,
+  WorktreeInfo
 } from "../types/ipc";
 
-const POLL_INTERVAL_MS = 4000;
 const isTauri =
   typeof window !== "undefined" &&
   ("__TAURI__" in window || "__TAURI_INTERNALS__" in window);
@@ -52,6 +58,10 @@ export default function RepositoryPicker() {
   const [diffHunkError, setDiffHunkError] = useState<string | null>(null);
   const [selectedHunkIds, setSelectedHunkIds] = useState<Set<string>>(new Set());
   const [hunkBusy, setHunkBusy] = useState(false);
+  const [fileScrollTop, setFileScrollTop] = useState(0);
+  const [hunkScrollTop, setHunkScrollTop] = useState(0);
+  const fileListRef = useRef<HTMLDivElement | null>(null);
+  const hunkListRef = useRef<HTMLDivElement | null>(null);
   const [branches, setBranches] = useState<BranchList | null>(null);
   const [branchBusy, setBranchBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -63,6 +73,8 @@ export default function RepositoryPicker() {
   const [commitBusy, setCommitBusy] = useState(false);
   const [commitLoading, setCommitLoading] = useState(false);
   const [commitAmend, setCommitAmend] = useState(false);
+  const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
+  const [worktreeBusy, setWorktreeBusy] = useState(false);
   const repoLabel = useMemo(() => {
     if (!repo) return "No repository selected";
     return `${repo.name} (${repo.path})`;
@@ -99,6 +111,7 @@ export default function RepositoryPicker() {
     setCommitPreview(null);
     setCommitError(null);
     setCommitAmend(false);
+    setWorktrees([]);
     if (repo?.repo_id) {
       clList(repo.repo_id)
         .then(setChangelists)
@@ -124,12 +137,17 @@ export default function RepositoryPicker() {
     };
 
     fetchStatus();
-    const handle = setInterval(fetchStatus, POLL_INTERVAL_MS);
+
+    const unlisten = listen<string>("repo_changed", (event) => {
+      if (event.payload === repo.repo_id) {
+        fetchStatus();
+      }
+    });
 
     return () => {
       cancelled = true;
-      clearInterval(handle);
       setPolling(false);
+      unlisten.then((fn) => fn()).catch(console.error);
     };
   }, [repo?.repo_id, setStatus]);
 
@@ -143,6 +161,16 @@ export default function RepositoryPicker() {
       .then(setBranches)
       .catch((error) => console.error("repo_branches failed", error));
   }, [repo?.repo_id]);
+
+  useEffect(() => {
+    if (!repo?.repo_root) {
+      setWorktrees([]);
+      return;
+    }
+    wtList(repo.repo_root)
+      .then((result) => setWorktrees(result.worktrees))
+      .catch((error) => console.error("wt_list failed", error));
+  }, [repo?.repo_root]);
 
   useEffect(() => {
     if (!repo?.repo_id || !selectedPath) return;
@@ -304,8 +332,91 @@ export default function RepositoryPicker() {
       setBranches(branchList);
       const clState = await clList(summary.repo_id);
       setChangelists(clState);
+      if (summary.repo_root) {
+        const wt = await wtList(summary.repo_root);
+        setWorktrees(wt.worktrees);
+      }
     } catch (error) {
       console.error("repo_open failed", error);
+    }
+  };
+
+  const handleSelectWorktree = async (path: string) => {
+    if (!repo || path === repo.worktree_path) return;
+    setWorktreeBusy(true);
+    try {
+      const summary = await repoOpenWorktree(repo.repo_root, path);
+      setRepo(summary);
+      const next = await repoStatus(summary.repo_id);
+      setStatus(next);
+      const clState = await clList(summary.repo_id);
+      setChangelists(clState);
+      const branchList = await repoBranches(summary.repo_id);
+      setBranches(branchList);
+    } catch (error) {
+      console.error("repo_open_worktree failed", error);
+      setToast("Worktree switch failed.");
+    } finally {
+      setWorktreeBusy(false);
+    }
+  };
+
+  const handleAddWorktree = async () => {
+    if (!repo) return;
+    const path = window.prompt("New worktree path");
+    if (!path) return;
+    const branchName = window.prompt("Branch name for worktree");
+    if (!branchName) return;
+    const newBranch = window.confirm("Create new branch?");
+    setWorktreeBusy(true);
+    try {
+      await wtAdd(repo.repo_root, path, branchName, newBranch);
+      const wt = await wtList(repo.repo_root);
+      setWorktrees(wt.worktrees);
+      await handleSelectWorktree(path);
+      setToast("Worktree added.");
+    } catch (error) {
+      console.error("wt_add failed", error);
+      setToast("Add worktree failed.");
+    } finally {
+      setWorktreeBusy(false);
+    }
+  };
+
+  const handleRemoveWorktree = async () => {
+    if (!repo) return;
+    if (!window.confirm(`Remove worktree at ${repo.worktree_path}?`)) return;
+    setWorktreeBusy(true);
+    try {
+      await wtRemove(repo.repo_root, repo.worktree_path);
+      const wt = await wtList(repo.repo_root);
+      setWorktrees(wt.worktrees);
+      const nextPath = wt.worktrees[0]?.path;
+      if (nextPath) {
+        await handleSelectWorktree(nextPath);
+      }
+      setToast("Worktree removed.");
+    } catch (error) {
+      console.error("wt_remove failed", error);
+      setToast("Remove worktree failed.");
+    } finally {
+      setWorktreeBusy(false);
+    }
+  };
+
+  const handlePruneWorktrees = async () => {
+    if (!repo) return;
+    setWorktreeBusy(true);
+    try {
+      await wtPrune(repo.repo_root);
+      const wt = await wtList(repo.repo_root);
+      setWorktrees(wt.worktrees);
+      setToast("Worktrees pruned.");
+    } catch (error) {
+      console.error("wt_prune failed", error);
+      setToast("Prune failed.");
+    } finally {
+      setWorktreeBusy(false);
     }
   };
 
@@ -573,6 +684,29 @@ export default function RepositoryPicker() {
     return file.changelist_id === selectedChangelistId;
   });
 
+  const fileRowHeight = 46;
+  const fileListHeight = 320;
+  const fileStart = Math.max(0, Math.floor(fileScrollTop / fileRowHeight) - 4);
+  const fileEnd = Math.min(
+    filteredFiles.length,
+    fileStart + Math.ceil(fileListHeight / fileRowHeight) + 12
+  );
+  const visibleFiles = filteredFiles.slice(fileStart, fileEnd);
+  const fileTopPadding = fileStart * fileRowHeight;
+  const fileBottomPadding =
+    Math.max(0, filteredFiles.length - fileEnd) * fileRowHeight;
+
+  const hunkRowHeight = 160;
+  const hunkListHeight = 360;
+  const hunkStart = Math.max(0, Math.floor(hunkScrollTop / hunkRowHeight) - 2);
+  const hunkEnd = Math.min(
+    diffHunks.length,
+    hunkStart + Math.ceil(hunkListHeight / hunkRowHeight) + 6
+  );
+  const visibleHunks = diffHunks.slice(hunkStart, hunkEnd);
+  const hunkTopPadding = hunkStart * hunkRowHeight;
+  const hunkBottomPadding = Math.max(0, diffHunks.length - hunkEnd) * hunkRowHeight;
+
   return (
     <section className="panel">
       <h2>Repository Picker</h2>
@@ -587,10 +721,49 @@ export default function RepositoryPicker() {
       {repo && (
         <div className="repo-shell">
           <div className="row">
+            <label className="muted" htmlFor="worktree-select">
+              Worktree
+            </label>
+            <select
+              id="worktree-select"
+              className="branch-select"
+              value={repo.worktree_path}
+              disabled={worktreeBusy || worktrees.length === 0}
+              onChange={(event) => handleSelectWorktree(event.target.value)}
+            >
+              {worktrees.length === 0 && (
+                <option value={repo.worktree_path}>{repo.worktree_path}</option>
+              )}
+              {worktrees.map((wt) => (
+                <option key={wt.path} value={wt.path}>
+                  {wt.path} ({wt.branch})
+                </option>
+              ))}
+            </select>
+            <button className="button secondary" onClick={handleAddWorktree} disabled={worktreeBusy}>
+              New Worktree…
+            </button>
+            <button
+              className="button secondary"
+              onClick={handleRemoveWorktree}
+              disabled={worktreeBusy}
+            >
+              Remove
+            </button>
+            <button
+              className="button secondary"
+              onClick={handlePruneWorktrees}
+              disabled={worktreeBusy}
+            >
+              Prune
+            </button>
+            {worktreeBusy && <span className="muted">Working…</span>}
+          </div>
+          <div className="row">
             <button className="button secondary" onClick={handleRefresh}>
               Refresh Summary
             </button>
-            <span className="muted">Polling: {polling ? "on" : "off"}</span>
+            <span className="muted">Watching: {polling ? "on" : "off"}</span>
           </div>
           <div className="row">
             <label className="muted" htmlFor="branch-select">
@@ -819,51 +992,60 @@ export default function RepositoryPicker() {
               {filteredFiles.length === 0 ? (
                 <p className="muted">No files in this changelist.</p>
               ) : (
-                <ul className="file-list">
-                  {filteredFiles.map((file) => (
-                    <li key={file.path} className="file-row">
-                      <button
-                        className="file-link"
-                        onClick={() =>
-                          handleSelectFile(
-                            file,
-                            file.status === "staged" ? "staged" : "unstaged"
-                          )
-                        }
-                      >
-                        {file.path}
-                      </button>
-                      <span className="status-pill">{file.status}</span>
-                      {file.changelist_partial && (
-                        <span className="partial-pill">Partial</span>
-                      )}
-                      <select
-                        className="move-select"
-                        value={file.changelist_id ?? "default"}
-                        onChange={(event) => handleMoveFile(file, event.target.value)}
-                      >
-                        {changelistItems.map((list) => (
-                          <option key={`move-${list.id}`} value={list.id}>
-                            {list.name}
-                          </option>
-                        ))}
-                      </select>
-                      <div className="status-actions">
-                        {file.status === "staged" || file.status === "both" ? (
-                          <button className="chip" onClick={() => handleUnstage(file)}>
-                            Unstage
-                          </button>
-                        ) : (
-                          file.status !== "conflicted" && (
-                            <button className="chip" onClick={() => handleStage(file)}>
-                              Stage
-                            </button>
-                          )
+                <div
+                  ref={fileListRef}
+                  className="file-list-virtual"
+                  style={{ height: fileListHeight }}
+                  onScroll={(event) =>
+                    setFileScrollTop((event.target as HTMLDivElement).scrollTop)
+                  }
+                >
+                  <div style={{ paddingTop: fileTopPadding, paddingBottom: fileBottomPadding }}>
+                    {visibleFiles.map((file) => (
+                      <div key={file.path} className="file-row">
+                        <button
+                          className="file-link"
+                          onClick={() =>
+                            handleSelectFile(
+                              file,
+                              file.status === "staged" ? "staged" : "unstaged"
+                            )
+                          }
+                        >
+                          {file.path}
+                        </button>
+                        <span className="status-pill">{file.status}</span>
+                        {file.changelist_partial && (
+                          <span className="partial-pill">Partial</span>
                         )}
+                        <select
+                          className="move-select"
+                          value={file.changelist_id ?? "default"}
+                          onChange={(event) => handleMoveFile(file, event.target.value)}
+                        >
+                          {changelistItems.map((list) => (
+                            <option key={`move-${list.id}`} value={list.id}>
+                              {list.name}
+                            </option>
+                          ))}
+                        </select>
+                        <div className="status-actions">
+                          {file.status === "staged" || file.status === "both" ? (
+                            <button className="chip" onClick={() => handleUnstage(file)}>
+                              Unstage
+                            </button>
+                          ) : (
+                            file.status !== "conflicted" && (
+                              <button className="chip" onClick={() => handleStage(file)}>
+                                Stage
+                              </button>
+                            )
+                          )}
+                        </div>
                       </div>
-                    </li>
-                  ))}
-                </ul>
+                    ))}
+                  </div>
+                </div>
               )}
 
               <div className="diff-panel">
@@ -930,20 +1112,29 @@ export default function RepositoryPicker() {
                       : diffText || "No diff to display."}
                   </pre>
                 ) : (
-                  <div className="hunk-list">
-                    {diffHunks.map((hunk) => (
-                      <div key={hunk.id} className="hunk-card">
-                        <label className="hunk-header">
-                          <input
-                            type="checkbox"
-                            checked={selectedHunkIds.has(hunk.id)}
-                            onChange={() => toggleHunk(hunk.id)}
-                          />
-                          <span>{hunk.header}</span>
-                        </label>
-                        <pre className="hunk-content">{hunk.content}</pre>
-                      </div>
-                    ))}
+                  <div
+                    ref={hunkListRef}
+                    className="hunk-list-virtual"
+                    style={{ height: hunkListHeight }}
+                    onScroll={(event) =>
+                      setHunkScrollTop((event.target as HTMLDivElement).scrollTop)
+                    }
+                  >
+                    <div style={{ paddingTop: hunkTopPadding, paddingBottom: hunkBottomPadding }}>
+                      {visibleHunks.map((hunk) => (
+                        <div key={hunk.id} className="hunk-card">
+                          <label className="hunk-header">
+                            <input
+                              type="checkbox"
+                              checked={selectedHunkIds.has(hunk.id)}
+                              onChange={() => toggleHunk(hunk.id)}
+                            />
+                            <span>{hunk.header}</span>
+                          </label>
+                          <pre className="hunk-content">{hunk.content}</pre>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>

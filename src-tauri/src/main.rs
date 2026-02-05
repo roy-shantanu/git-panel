@@ -19,9 +19,14 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             api::repo_open,
+            api::repo_open_worktree,
             api::repo_status,
             api::repo_diff,
             api::repo_diff_hunks,
+            api::wt_list,
+            api::wt_add,
+            api::wt_remove,
+            api::wt_prune,
             api::repo_stage,
             api::repo_unstage,
             api::repo_branches,

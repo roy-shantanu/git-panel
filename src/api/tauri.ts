@@ -18,13 +18,21 @@ import type {
   RepoStatus,
   RepoStatusRequest,
   RepoSummary,
-  RepoDiffKind,
-  UnifiedDiffText
+  UnifiedDiffText,
+  WorktreeList,
+  WorktreeResult
 } from "../types/ipc";
 
 export async function repoOpen(path: string): Promise<RepoSummary> {
   console.log("repo_open", path);
   return invoke("repo_open", { req: { path } });
+}
+
+export async function repoOpenWorktree(
+  repo_root: string,
+  worktree_path: string
+): Promise<RepoSummary> {
+  return invoke("repo_open_worktree", { req: { repo_root, worktree_path } });
 }
 
 export async function repoStatus(repo_id: string): Promise<RepoStatus> {
@@ -153,4 +161,25 @@ export async function commitExecute(
   options?: CommitOptions
 ): Promise<CommitResult> {
   return invoke("commit_execute", { req: { repo_id, changelist_id, message, options } });
+}
+
+export async function wtList(repo_root: string): Promise<WorktreeList> {
+  return invoke("wt_list", { req: { repo_root, path: repo_root } });
+}
+
+export async function wtAdd(
+  repo_root: string,
+  path: string,
+  branch_name: string,
+  new_branch?: boolean
+): Promise<WorktreeResult> {
+  return invoke("wt_add", { req: { repo_root, path, branch_name, new_branch } });
+}
+
+export async function wtRemove(repo_root: string, path: string): Promise<WorktreeResult> {
+  return invoke("wt_remove", { req: { repo_root, path } });
+}
+
+export async function wtPrune(repo_root: string): Promise<WorktreeResult> {
+  return invoke("wt_prune", { req: { repo_root, path: repo_root } });
 }

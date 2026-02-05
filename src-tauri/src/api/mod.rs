@@ -10,20 +10,51 @@ use crate::model::{
     Changelist, ChangelistAssignHunksRequest, ChangelistAssignRequest, ChangelistCreateRequest,
     ChangelistIdRequest, ChangelistRenameRequest, ChangelistState, ChangelistUnassignHunksRequest,
     ChangelistUnassignRequest, CommitExecuteRequest, CommitPreview, CommitPrepareRequest,
-    CommitResult, DiffHunk, HunkAssignment, RepoPathRequest, RepoStatusRequest, RepoSummary,
-    UnifiedDiffText,
+    CommitResult, DiffHunk, HunkAssignment, RepoOpenWorktreeRequest, RepoPathRequest,
+    RepoStatusRequest, RepoSummary, UnifiedDiffText, WorktreeAddRequest, WorktreeList,
+    WorktreePathRequest, WorktreeResult,
 };
 use crate::store::{now_ms, AppState};
+use std::time::Instant;
 
 const STATUS_TTL_MS: u64 = 500;
 
 #[tauri::command]
 pub async fn repo_open(
     req: RepoOpenRequest,
+    app: AppHandle,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<RepoSummary, String> {
     let summary = git::open_repo(&req.path);
     let mut guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+    if summary.is_valid {
+        if let Ok(watcher) =
+            crate::watch::RepoWatcher::new(app, summary.repo_id.clone(), summary.worktree_path.clone())
+        {
+            guard.upsert_watcher(&summary.repo_id, watcher);
+        }
+    }
+    Ok(guard.upsert_repo(summary))
+}
+
+#[tauri::command]
+pub async fn repo_open_worktree(
+    req: RepoOpenWorktreeRequest,
+    app: AppHandle,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<RepoSummary, String> {
+    let mut summary = git::open_repo(&req.worktree_path);
+    summary.repo_root = req.repo_root;
+    summary.worktree_path = req.worktree_path.clone();
+    summary.repo_id = git::repo_id_for_path(&summary.worktree_path);
+    let mut guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+    if summary.is_valid {
+        if let Ok(watcher) =
+            crate::watch::RepoWatcher::new(app, summary.repo_id.clone(), summary.worktree_path.clone())
+        {
+            guard.upsert_watcher(&summary.repo_id, watcher);
+        }
+    }
     Ok(guard.upsert_repo(summary))
 }
 
@@ -54,9 +85,15 @@ pub async fn repo_status(
 
     // Compute in a blocking task; only the most recent job is allowed to update the cache.
     let summary_for_job = summary.clone();
+    let start = Instant::now();
     let status = tauri::async_runtime::spawn_blocking(move || git::status(&summary_for_job))
         .await
         .map_err(|_| "status job failed".to_string())??;
+    tracing::info!(
+        repo_id = %summary.repo_id,
+        duration_ms = start.elapsed().as_millis(),
+        "status computed"
+    );
 
     let mut status = status;
     if let Ok(mut cl_state) = changelist::load_state(&summary) {
@@ -64,7 +101,7 @@ pub async fn repo_status(
     }
 
     let mut guard = state.lock().map_err(|_| "state lock failed".to_string())?;
-    if guard.job_queue.is_current(&req.repo_id, token) {
+    if guard.job_queue.is_current(&req.repo_id, crate::jobs::JobKind::Status, token) {
         guard.set_status(status.clone());
         Ok(status)
     } else if let Some(cache) = guard.get_status(&req.repo_id) {
@@ -100,7 +137,49 @@ pub async fn repo_diff(
         guard.get_repo(&req.repo_id)
     };
     let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
-    git::diff_for_path(&summary, &req.path, req.kind)
+    let cache_key = git::diff_cache_key(&summary, &req.path, req.kind.clone()).ok();
+    if let Some(key) = cache_key.as_ref() {
+        if let Ok(guard) = state.lock() {
+            if let Some(cached) = guard.get_diff_cache(key) {
+                return Ok(cached);
+            }
+        }
+    }
+
+    let token = {
+        let mut guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.job_queue.start_diff(&summary.repo_id)
+    };
+
+    let summary_for_job = summary.clone();
+    let path = req.path.clone();
+    let kind = req.kind.clone();
+    let start = Instant::now();
+    let diff = tauri::async_runtime::spawn_blocking(move || {
+        git::diff_for_path(&summary_for_job, &path, kind)
+    })
+    .await
+    .map_err(|_| "diff job failed".to_string())??;
+
+    tracing::info!(
+        repo_id = %summary.repo_id,
+        path = %req.path,
+        duration_ms = start.elapsed().as_millis(),
+        "diff computed"
+    );
+
+    let mut guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+    if !guard
+        .job_queue
+        .is_current(&req.repo_id, crate::jobs::JobKind::Diff, token)
+    {
+        return Err("diff superseded".to_string());
+    }
+
+    if let Some(key) = cache_key {
+        guard.set_diff_cache(key, diff.clone());
+    }
+    Ok(diff)
 }
 
 #[tauri::command]
@@ -113,7 +192,57 @@ pub async fn repo_diff_hunks(
         guard.get_repo(&req.repo_id)
     };
     let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
-    git::diff_hunks_for_path(&summary, &req.path, req.kind)
+    let path = req.path.clone();
+    let kind = req.kind.clone();
+    let cache_key = git::diff_cache_key(&summary, &path, kind.clone()).ok();
+    if let Some(key) = cache_key.as_ref() {
+        if let Ok(guard) = state.lock() {
+            if let Some(cached) = guard.get_diff_cache(key) {
+                return Ok(git::diff_hunks_from_text(
+                    &cached.text,
+                    &path,
+                    kind.clone(),
+                ));
+            }
+        }
+    }
+
+    let diff = repo_diff(req, state).await?;
+    Ok(git::diff_hunks_from_text(
+        &diff.text,
+        &path,
+        kind,
+    ))
+}
+
+#[tauri::command]
+pub async fn wt_list(req: WorktreePathRequest) -> Result<WorktreeList, String> {
+    tauri::async_runtime::spawn_blocking(move || git::list_worktrees(&req.repo_root))
+        .await
+        .map_err(|_| "worktree list failed".to_string())?
+}
+
+#[tauri::command]
+pub async fn wt_add(req: WorktreeAddRequest) -> Result<WorktreeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git::add_worktree(&req.repo_root, &req.path, &req.branch_name, req.new_branch)
+    })
+    .await
+    .map_err(|_| "worktree add failed".to_string())?
+}
+
+#[tauri::command]
+pub async fn wt_remove(req: WorktreePathRequest) -> Result<WorktreeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || git::remove_worktree(&req.repo_root, &req.path))
+        .await
+        .map_err(|_| "worktree remove failed".to_string())?
+}
+
+#[tauri::command]
+pub async fn wt_prune(req: WorktreePathRequest) -> Result<WorktreeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || git::prune_worktrees(&req.repo_root))
+        .await
+        .map_err(|_| "worktree prune failed".to_string())?
 }
 
 #[tauri::command]
@@ -476,7 +605,7 @@ fn preview_from_files(
     hunk_files: Vec<String>,
     hunk_assignments: &std::collections::HashMap<String, crate::model::HunkAssignmentSet>,
 ) -> Result<CommitPreview, String> {
-    if files.is_empty() {
+    if files.is_empty() && hunk_files.is_empty() {
         return Err("Changelist has no files.".to_string());
     }
     if files.iter().any(|file| matches!(file.status, crate::model::StatusKind::Conflicted)) {
@@ -601,6 +730,8 @@ mod tests {
             repo_id: "test".to_string(),
             path: "test".to_string(),
             name: "test".to_string(),
+            repo_root: "test".to_string(),
+            worktree_path: "test".to_string(),
             is_valid: true,
         };
         let result = preview_from_files(
@@ -638,6 +769,8 @@ mod tests {
             repo_id: "test".to_string(),
             path: "test".to_string(),
             name: "test".to_string(),
+            repo_root: "test".to_string(),
+            worktree_path: "test".to_string(),
             is_valid: true,
         };
         let preview = preview_from_files(
