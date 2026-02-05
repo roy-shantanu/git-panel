@@ -21,6 +21,26 @@ export interface RepoPathRequest {
   path: string;
 }
 
+export interface RepoBranchListRequest {
+  repo_id: RepoId;
+}
+
+export interface RepoCheckoutRequest {
+  repo_id: RepoId;
+  target: CheckoutTarget;
+}
+
+export interface RepoCreateBranchRequest {
+  repo_id: RepoId;
+  name: string;
+  from?: string;
+}
+
+export interface RepoFetchRequest {
+  repo_id: RepoId;
+  remote?: string;
+}
+
 export interface RepoSummary {
   repo_id: RepoId;
   path: string;
@@ -74,3 +94,32 @@ export interface AppVersion {
 export interface UnifiedDiffText {
   text: string;
 }
+
+export interface BranchList {
+  current: string;
+  locals: string[];
+  remotes: string[];
+  ahead_behind?: Record<string, { ahead: number; behind: number }>;
+}
+
+export interface CheckoutTarget {
+  type: "local" | "remote";
+  name: string;
+}
+
+export interface CheckoutResult {
+  head: RepoHead;
+}
+
+export interface BranchCreateResult {
+  name: string;
+}
+
+export interface FetchResult {
+  remote: string;
+  updated: boolean;
+}
+
+export type RepoError =
+  | { type: "DirtyWorkingTree"; message: string }
+  | { type: "GitError"; message: string };

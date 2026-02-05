@@ -4,8 +4,9 @@ use tauri::{AppHandle, State};
 
 use crate::git;
 use crate::model::{
-    AppVersion, RepoDiffRequest, RepoOpenRequest, RepoPathRequest, RepoStatusRequest, RepoSummary,
-    UnifiedDiffText,
+    AppVersion, BranchCreateResult, BranchList, CheckoutResult, RepoBranchListRequest,
+    RepoCheckoutRequest, RepoCreateBranchRequest, RepoDiffRequest, RepoFetchRequest, RepoOpenRequest,
+    RepoPathRequest, RepoStatusRequest, RepoSummary, UnifiedDiffText,
 };
 use crate::store::{now_ms, AppState};
 
@@ -115,4 +116,82 @@ pub async fn repo_unstage(
     };
     let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
     git::unstage_path(&summary, &req.path)
+}
+
+#[tauri::command]
+pub async fn repo_branches(
+    req: RepoBranchListRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<BranchList, String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    git::list_branches(&summary)
+}
+
+#[tauri::command]
+pub async fn repo_checkout(
+    req: RepoCheckoutRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<CheckoutResult, crate::model::RepoError> {
+    let summary = {
+        let guard = state
+            .lock()
+            .map_err(|_| crate::model::RepoError::GitError {
+                message: "state lock failed".to_string(),
+            })?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| crate::model::RepoError::GitError {
+        message: "unknown repo id".to_string(),
+    })?;
+
+    let summary_for_job = summary.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        git::checkout_branch(&summary_for_job, &req.target)
+    })
+        .await
+        .map_err(|_| crate::model::RepoError::GitError {
+            message: "checkout job failed".to_string(),
+        })??;
+
+    // Update cached status after checkout so UI refreshes quickly.
+    if let Ok(status) = git::status(&summary) {
+        if let Ok(mut guard) = state.lock() {
+            guard.set_status(status);
+        }
+    }
+
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn repo_create_branch(
+    req: RepoCreateBranchRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<BranchCreateResult, String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    git::create_branch(&summary, &req.name, req.from.as_deref())?;
+    Ok(BranchCreateResult { name: req.name })
+}
+
+#[tauri::command]
+pub async fn repo_fetch(
+    req: RepoFetchRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<crate::model::FetchResult, String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    let remote = req.remote.clone().unwrap_or_else(|| "origin".to_string());
+    let updated = git::fetch(&summary, req.remote.as_deref())?;
+    Ok(crate::model::FetchResult { remote, updated })
 }

@@ -33,6 +33,32 @@ pub struct RepoPathRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoBranchListRequest {
+    pub repo_id: RepoId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoCheckoutRequest {
+    pub repo_id: RepoId,
+    pub target: CheckoutTarget,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoCreateBranchRequest {
+    pub repo_id: RepoId,
+    pub name: String,
+    #[serde(default)]
+    pub from: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoFetchRequest {
+    pub repo_id: RepoId,
+    #[serde(default)]
+    pub remote: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoSummary {
     pub repo_id: RepoId,
     pub path: String,
@@ -46,6 +72,58 @@ pub struct RepoStatus {
     pub head: RepoHead,
     pub counts: RepoCounts,
     pub files: Vec<StatusFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchList {
+    pub current: String,
+    pub locals: Vec<String>,
+    pub remotes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ahead_behind: Option<std::collections::HashMap<String, AheadBehind>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AheadBehind {
+    pub ahead: u32,
+    pub behind: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckoutTarget {
+    #[serde(rename = "type")]
+    pub kind: CheckoutTargetKind,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckoutTargetKind {
+    Local,
+    Remote,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckoutResult {
+    pub head: RepoHead,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchCreateResult {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FetchResult {
+    pub remote: String,
+    pub updated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum RepoError {
+    DirtyWorkingTree { message: String },
+    GitError { message: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

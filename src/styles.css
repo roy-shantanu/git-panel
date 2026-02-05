@@ -72,6 +72,14 @@ body {
   color: #1d1d1f;
 }
 
+.branch-select {
+  border: 1px solid #d0d0d0;
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: #ffffff;
+  min-width: 180px;
+}
+
 .status-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(120px, 1fr));
@@ -184,6 +192,16 @@ body {
   overflow: auto;
   font-size: 12px;
   white-space: pre-wrap;
+}
+
+.toast {
+  margin: 10px 0 12px 0;
+  padding: 10px 12px;
+  border: 1px solid #f3c2c2;
+  background: #fff4f4;
+  color: #6d1b1b;
+  border-radius: 8px;
+  font-size: 13px;
 }
 
 .status-card {

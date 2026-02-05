@@ -2,11 +2,14 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-use git2::{DiffFormat, DiffOptions, ObjectType, Repository, Status, StatusOptions};
+use git2::{
+    build::CheckoutBuilder, BranchType, DiffFormat, DiffOptions, FetchOptions, ObjectType,
+    RemoteCallbacks, Repository, Status, StatusOptions,
+};
 
 use crate::model::{
-    RepoCounts, RepoDiffKind, RepoHead, RepoId, RepoStatus, RepoSummary, StatusFile, StatusKind,
-    UnifiedDiffText,
+    BranchList, CheckoutResult, CheckoutTarget, CheckoutTargetKind, RepoCounts, RepoDiffKind,
+    RepoError, RepoHead, RepoId, RepoStatus, RepoSummary, StatusFile, StatusKind, UnifiedDiffText,
 };
 
 pub fn open_repo(path: &str) -> RepoSummary {
@@ -163,6 +166,106 @@ pub fn unstage_path(summary: &RepoSummary, path: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn list_branches(summary: &RepoSummary) -> Result<BranchList, String> {
+    let repo = Repository::open(&summary.path).map_err(|e| e.to_string())?;
+    let head = repo_head(&repo)?;
+    let current = head.branch_name.clone();
+    let mut locals = Vec::new();
+    let mut remotes = Vec::new();
+
+    if let Ok(mut iter) = repo.branches(Some(BranchType::Local)) {
+        for item in iter.flatten() {
+            if let Ok(Some(name)) = item.0.name() {
+                locals.push(name.to_string());
+            }
+        }
+    }
+
+    if let Ok(mut iter) = repo.branches(Some(BranchType::Remote)) {
+        for item in iter.flatten() {
+            if let Ok(Some(name)) = item.0.name() {
+                remotes.push(name.to_string());
+            }
+        }
+    }
+
+    locals.sort();
+    remotes.sort();
+
+    Ok(BranchList {
+        current,
+        locals,
+        remotes,
+        ahead_behind: None,
+    })
+}
+
+pub fn checkout_branch(
+    summary: &RepoSummary,
+    target: &CheckoutTarget,
+) -> Result<CheckoutResult, RepoError> {
+    let repo = Repository::open(&summary.path).map_err(|e| RepoError::GitError {
+        message: e.to_string(),
+    })?;
+
+    if is_workdir_dirty(&repo) {
+        return Err(RepoError::DirtyWorkingTree {
+            message: "Working tree has uncommitted changes.".to_string(),
+        });
+    }
+
+    match target.kind {
+        CheckoutTargetKind::Local => checkout_local(&repo, &target.name)?,
+        CheckoutTargetKind::Remote => checkout_remote(&repo, &target.name)?,
+    }
+
+    let head = repo_head(&repo).map_err(|e| RepoError::GitError { message: e })?;
+    Ok(CheckoutResult { head })
+}
+
+pub fn create_branch(
+    summary: &RepoSummary,
+    name: &str,
+    from: Option<&str>,
+) -> Result<(), String> {
+    let repo = Repository::open(&summary.path).map_err(|e| e.to_string())?;
+    let target = if let Some(from) = from {
+        repo.revparse_single(from).map_err(|e| e.to_string())?
+    } else {
+        repo.head()
+            .and_then(|h| h.peel(ObjectType::Commit))
+            .map_err(|e| e.to_string())?
+    };
+
+    let commit = target
+        .peel(ObjectType::Commit)
+        .map_err(|e| e.to_string())?
+        .into_commit()
+        .map_err(|_| "not a commit".to_string())?;
+
+    repo.branch(name, &commit, false)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn fetch(summary: &RepoSummary, remote: Option<&str>) -> Result<bool, String> {
+    let repo = Repository::open(&summary.path).map_err(|e| e.to_string())?;
+    let remote_name = remote.unwrap_or("origin");
+    let mut remote = repo.find_remote(remote_name).map_err(|e| e.to_string())?;
+
+    let mut callbacks = RemoteCallbacks::new();
+    callbacks.credentials(|_url, _username, _allowed| git2::Cred::default());
+
+    let mut options = FetchOptions::new();
+    options.remote_callbacks(callbacks);
+
+    remote
+        .fetch(&[] as &[&str], Some(&mut options), None)
+        .map_err(|e| e.to_string())?;
+
+    Ok(true)
+}
+
 fn repo_id_for_path(path: &str) -> RepoId {
     let mut hasher = DefaultHasher::new();
     path.hash(&mut hasher);
@@ -241,4 +344,76 @@ fn extract_paths(entry: &git2::StatusEntry) -> (Option<String>, Option<String>) 
         path.map(|p| p.to_string_lossy().to_string()),
         old_path.map(|p| p.to_string_lossy().to_string()),
     )
+}
+
+fn is_workdir_dirty(repo: &Repository) -> bool {
+    let mut options = StatusOptions::new();
+    options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_unmodified(false);
+    if let Ok(statuses) = repo.statuses(Some(&mut options)) {
+        statuses
+            .iter()
+            .any(|entry| !entry.status().is_empty() && entry.status() != Status::CURRENT)
+    } else {
+        false
+    }
+}
+
+fn checkout_local(repo: &Repository, name: &str) -> Result<(), RepoError> {
+    let obj = repo
+        .revparse_single(&format!("refs/heads/{name}"))
+        .map_err(|e| RepoError::GitError {
+            message: e.to_string(),
+        })?;
+    let mut builder = CheckoutBuilder::new();
+    repo.checkout_tree(&obj, Some(&mut builder))
+        .map_err(|e| RepoError::GitError {
+            message: e.to_string(),
+        })?;
+    repo.set_head(&format!("refs/heads/{name}"))
+        .map_err(|e| RepoError::GitError {
+            message: e.to_string(),
+        })?;
+    Ok(())
+}
+
+fn checkout_remote(repo: &Repository, name: &str) -> Result<(), RepoError> {
+    let obj = repo.revparse_single(&format!("refs/remotes/{name}")).map_err(|e| {
+        RepoError::GitError {
+            message: e.to_string(),
+        }
+    })?;
+
+    let mut branch_name = name.to_string();
+    if let Some((_remote, short)) = name.split_once('/') {
+        branch_name = short.to_string();
+    }
+
+    let commit = obj
+        .peel(ObjectType::Commit)
+        .map_err(|e| RepoError::GitError {
+            message: e.to_string(),
+        })?
+        .into_commit()
+        .map_err(|_| RepoError::GitError {
+            message: "not a commit".to_string(),
+        })?;
+
+    repo.branch(&branch_name, &commit, false)
+        .map_err(|e| RepoError::GitError {
+            message: e.to_string(),
+        })?;
+
+    let mut builder = CheckoutBuilder::new();
+    repo.checkout_tree(&obj, Some(&mut builder))
+        .map_err(|e| RepoError::GitError {
+            message: e.to_string(),
+        })?;
+    repo.set_head(&format!("refs/heads/{branch_name}"))
+        .map_err(|e| RepoError::GitError {
+            message: e.to_string(),
+        })?;
+    Ok(())
 }

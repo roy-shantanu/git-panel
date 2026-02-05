@@ -1,8 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { repoDiff, repoListRecent, repoOpen, repoStage, repoStatus, repoUnstage } from "../api/tauri";
+import {
+  repoBranches,
+  repoCheckout,
+  repoCreateBranch,
+  repoDiff,
+  repoFetch,
+  repoListRecent,
+  repoOpen,
+  repoStage,
+  repoStatus,
+  repoUnstage
+} from "../api/tauri";
 import { useAppStore } from "../state/store";
-import type { RepoDiffKind, StatusFile } from "../types/ipc";
+import type { BranchList, RepoDiffKind, RepoError, StatusFile } from "../types/ipc";
 
 const POLL_INTERVAL_MS = 4000;
 const isTauri =
@@ -17,6 +28,9 @@ export default function RepositoryPicker() {
   const [diffKind, setDiffKind] = useState<RepoDiffKind>("unstaged");
   const [diffText, setDiffText] = useState("");
   const [diffLoading, setDiffLoading] = useState(false);
+  const [branches, setBranches] = useState<BranchList | null>(null);
+  const [branchBusy, setBranchBusy] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
   const repoLabel = useMemo(() => {
     if (!repo) return "No repository selected";
     return `${repo.name} (${repo.path})`;
@@ -25,6 +39,12 @@ export default function RepositoryPicker() {
   useEffect(() => {
     repoListRecent().then(setRecent).catch(console.error);
   }, [setRecent]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const handle = setTimeout(() => setToast(null), 3500);
+    return () => clearTimeout(handle);
+  }, [toast]);
 
   useEffect(() => {
     setSelectedFile(null);
@@ -57,6 +77,17 @@ export default function RepositoryPicker() {
       setPolling(false);
     };
   }, [repo?.repo_id, setStatus]);
+
+  useEffect(() => {
+    if (!repo?.repo_id) {
+      setBranches(null);
+      return;
+    }
+
+    repoBranches(repo.repo_id)
+      .then(setBranches)
+      .catch((error) => console.error("repo_branches failed", error));
+  }, [repo?.repo_id]);
 
   useEffect(() => {
     if (!repo?.repo_id || !selectedPath) return;
@@ -119,8 +150,60 @@ export default function RepositoryPicker() {
       setRecent(recents);
       const next = await repoStatus(summary.repo_id);
       setStatus(next);
+      const branchList = await repoBranches(summary.repo_id);
+      setBranches(branchList);
     } catch (error) {
       console.error("repo_open failed", error);
+    }
+  };
+
+  const handleCheckout = async (type: "local" | "remote", name: string) => {
+    if (!repo) return;
+    setBranchBusy(true);
+    try {
+      await repoCheckout(repo.repo_id, { type, name });
+      const next = await repoStatus(repo.repo_id);
+      setStatus(next);
+      const branchList = await repoBranches(repo.repo_id);
+      setBranches(branchList);
+    } catch (error) {
+      const typed = error as RepoError;
+      if (typed?.type === "DirtyWorkingTree") {
+        setToast("Checkout blocked: working tree has uncommitted changes.");
+      } else {
+        setToast("Checkout failed. See console for details.");
+      }
+      console.error("repo_checkout failed", error);
+    } finally {
+      setBranchBusy(false);
+    }
+  };
+
+  const handleCreateBranch = async () => {
+    if (!repo) return;
+    const name = window.prompt("New branch name");
+    if (!name) return;
+    try {
+      await repoCreateBranch(repo.repo_id, name);
+      await handleCheckout("local", name);
+    } catch (error) {
+      setToast("Create branch failed. See console for details.");
+      console.error("repo_create_branch failed", error);
+    }
+  };
+
+  const handleFetch = async () => {
+    if (!repo) return;
+    setBranchBusy(true);
+    try {
+      await repoFetch(repo.repo_id);
+      const branchList = await repoBranches(repo.repo_id);
+      setBranches(branchList);
+    } catch (error) {
+      setToast("Fetch failed. See console for details.");
+      console.error("repo_fetch failed", error);
+    } finally {
+      setBranchBusy(false);
     }
   };
 
@@ -159,10 +242,12 @@ export default function RepositoryPicker() {
   );
   const untrackedFiles = files.filter((file) => file.status === "untracked");
   const conflictedFiles = files.filter((file) => file.status === "conflicted");
+  const branchValue = branches?.current ? `local::${branches.current}` : "";
 
   return (
     <section className="panel">
       <h2>Repository Picker</h2>
+      {toast && <div className="toast">{toast}</div>}
       <div className="row">
         <button className="button" onClick={handlePick}>
           Choose Folder
@@ -177,6 +262,46 @@ export default function RepositoryPicker() {
               Refresh Summary
             </button>
             <span className="muted">Polling: {polling ? "on" : "off"}</span>
+          </div>
+          <div className="row">
+            <label className="muted" htmlFor="branch-select">
+              Branch
+            </label>
+            <select
+              id="branch-select"
+              className="branch-select"
+              value={branchValue}
+              disabled={!branches || branchBusy}
+              onChange={(event) => {
+                const value = event.target.value;
+                if (!value) return;
+                const [type, name] = value.split("::");
+                if (type && name) {
+                  handleCheckout(type as "local" | "remote", name);
+                }
+              }}
+            >
+              <option value="" disabled>
+                {branches ? branches.current : "Loading branches..."}
+              </option>
+              {branches?.locals.map((name) => (
+                <option key={`local-${name}`} value={`local::${name}`}>
+                  {name}
+                </option>
+              ))}
+              {branches?.remotes.map((name) => (
+                <option key={`remote-${name}`} value={`remote::${name}`}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            <button className="button secondary" onClick={handleCreateBranch} disabled={branchBusy}>
+              New Branch…
+            </button>
+            <button className="button secondary" onClick={handleFetch} disabled={branchBusy}>
+              Fetch
+            </button>
+            {branchBusy && <span className="muted">Working…</span>}
           </div>
 
           <div className="status-grid">

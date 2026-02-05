@@ -22,6 +22,10 @@ fn main() {
             api::repo_diff,
             api::repo_stage,
             api::repo_unstage,
+            api::repo_branches,
+            api::repo_checkout,
+            api::repo_create_branch,
+            api::repo_fetch,
             api::repo_list_recent,
             api::app_version
         ])
