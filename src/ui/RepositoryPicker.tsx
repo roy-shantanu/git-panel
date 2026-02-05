@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  clAssignFiles,
+  clCreate,
+  clDelete,
+  clList,
+  clRename,
+  clSetActive,
+  commitExecute,
+  commitPrepare,
   repoBranches,
   repoCheckout,
   repoCreateBranch,
@@ -13,7 +21,15 @@ import {
   repoUnstage
 } from "../api/tauri";
 import { useAppStore } from "../state/store";
-import type { BranchList, RepoDiffKind, RepoError, StatusFile } from "../types/ipc";
+import type {
+  BranchList,
+  Changelist,
+  ChangelistState,
+  CommitPreview,
+  RepoDiffKind,
+  RepoError,
+  StatusFile
+} from "../types/ipc";
 
 const POLL_INTERVAL_MS = 4000;
 const isTauri =
@@ -31,10 +47,29 @@ export default function RepositoryPicker() {
   const [branches, setBranches] = useState<BranchList | null>(null);
   const [branchBusy, setBranchBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [changelists, setChangelists] = useState<ChangelistState | null>(null);
+  const [selectedChangelistId, setSelectedChangelistId] = useState<string>("default");
+  const [commitMessage, setCommitMessage] = useState("");
+  const [commitPreview, setCommitPreview] = useState<CommitPreview | null>(null);
+  const [commitError, setCommitError] = useState<string | null>(null);
+  const [commitBusy, setCommitBusy] = useState(false);
+  const [commitLoading, setCommitLoading] = useState(false);
+  const [commitAmend, setCommitAmend] = useState(false);
   const repoLabel = useMemo(() => {
     if (!repo) return "No repository selected";
     return `${repo.name} (${repo.path})`;
   }, [repo]);
+
+  const files = status?.files ?? [];
+
+  const changelistCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const file of files) {
+      const key = file.changelist_id ?? "default";
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }, [files]);
 
   useEffect(() => {
     repoListRecent().then(setRecent).catch(console.error);
@@ -51,6 +86,18 @@ export default function RepositoryPicker() {
     setSelectedPath(null);
     setDiffText("");
     setDiffKind("unstaged");
+    setSelectedChangelistId("default");
+    setCommitMessage("");
+    setCommitPreview(null);
+    setCommitError(null);
+    setCommitAmend(false);
+    if (repo?.repo_id) {
+      clList(repo.repo_id)
+        .then(setChangelists)
+        .catch((error) => console.error("cl_list failed", error));
+    } else {
+      setChangelists(null);
+    }
   }, [repo?.repo_id]);
 
   useEffect(() => {
@@ -111,6 +158,43 @@ export default function RepositoryPicker() {
     };
   }, [repo?.repo_id, selectedPath, diffKind]);
 
+  useEffect(() => {
+    if (!repo?.repo_id) {
+      setCommitPreview(null);
+      setCommitError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setCommitLoading(true);
+    setCommitError(null);
+
+    commitPrepare(repo.repo_id, selectedChangelistId)
+      .then((preview) => {
+        if (!cancelled) {
+          setCommitPreview(preview);
+          setCommitError(null);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          const message =
+            typeof error === "string"
+              ? error
+              : (error as Error)?.message ?? "Commit preview failed.";
+          setCommitPreview(null);
+          setCommitError(message);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCommitLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [repo?.repo_id, selectedChangelistId, status]);
+
   const handlePick = async () => {
     if (!isTauri) {
       console.warn("File picker requires the Tauri app runtime.");
@@ -152,6 +236,8 @@ export default function RepositoryPicker() {
       setStatus(next);
       const branchList = await repoBranches(summary.repo_id);
       setBranches(branchList);
+      const clState = await clList(summary.repo_id);
+      setChangelists(clState);
     } catch (error) {
       console.error("repo_open failed", error);
     }
@@ -207,6 +293,109 @@ export default function RepositoryPicker() {
     }
   };
 
+  const refreshChangelists = async () => {
+    if (!repo) return;
+    const clState = await clList(repo.repo_id);
+    setChangelists(clState);
+  };
+
+  const handleCreateChangelist = async () => {
+    if (!repo) return;
+    const name = window.prompt("New changelist name");
+    if (!name) return;
+    try {
+      await clCreate(repo.repo_id, name);
+      await refreshChangelists();
+    } catch (error) {
+      console.error("cl_create failed", error);
+      setToast("Create changelist failed.");
+    }
+  };
+
+  const handleRenameChangelist = async (list: Changelist) => {
+    if (!repo) return;
+    const name = window.prompt("Rename changelist", list.name);
+    if (!name || name === list.name) return;
+    try {
+      await clRename(repo.repo_id, list.id, name);
+      await refreshChangelists();
+    } catch (error) {
+      console.error("cl_rename failed", error);
+      setToast("Rename changelist failed.");
+    }
+  };
+
+  const handleDeleteChangelist = async (list: Changelist) => {
+    if (!repo) return;
+    if (!window.confirm(`Delete changelist "${list.name}"?`)) return;
+    try {
+      await clDelete(repo.repo_id, list.id);
+      if (selectedChangelistId === list.id) {
+        setSelectedChangelistId("default");
+      }
+      await refreshChangelists();
+    } catch (error) {
+      console.error("cl_delete failed", error);
+      setToast("Delete changelist failed.");
+    }
+  };
+
+  const handleSetActiveChangelist = async (id: string) => {
+    if (!repo) return;
+    try {
+      await clSetActive(repo.repo_id, id);
+      await refreshChangelists();
+    } catch (error) {
+      console.error("cl_set_active failed", error);
+      setToast("Set active changelist failed.");
+    }
+  };
+
+  const handleMoveFile = async (file: StatusFile, id: string) => {
+    if (!repo) return;
+    try {
+      await clAssignFiles(repo.repo_id, id, [file.path]);
+      await refreshChangelists();
+      const next = await repoStatus(repo.repo_id);
+      setStatus(next);
+    } catch (error) {
+      console.error("cl_assign failed", error);
+      setToast("Move to changelist failed.");
+    }
+  };
+
+  const handleCommit = async () => {
+    if (!repo) return;
+    if (!commitMessage.trim()) {
+      setCommitError("Commit message is required.");
+      return;
+    }
+
+    setCommitBusy(true);
+    setCommitError(null);
+    try {
+      await commitExecute(repo.repo_id, selectedChangelistId, commitMessage.trim(), {
+        amend: commitAmend
+      });
+      setCommitMessage("");
+      setCommitAmend(false);
+      const next = await repoStatus(repo.repo_id);
+      setStatus(next);
+      const clState = await clList(repo.repo_id);
+      setChangelists(clState);
+      setToast("Changelist committed.");
+    } catch (error) {
+      const message =
+        typeof error === "string"
+          ? error
+          : (error as Error)?.message ?? "Commit failed.";
+      setCommitError(message);
+      setToast("Commit failed. See details in the commit panel.");
+    } finally {
+      setCommitBusy(false);
+    }
+  };
+
   const handleSelectFile = (file: StatusFile, kind: RepoDiffKind) => {
     setSelectedFile(file);
     setSelectedPath(file.path);
@@ -233,16 +422,23 @@ export default function RepositoryPicker() {
     }
   };
 
-  const files = status?.files ?? [];
-  const stagedFiles = files.filter(
-    (file) => file.status === "staged" || file.status === "both"
-  );
-  const unstagedFiles = files.filter(
-    (file) => file.status === "unstaged" || file.status === "both"
-  );
-  const untrackedFiles = files.filter((file) => file.status === "untracked");
-  const conflictedFiles = files.filter((file) => file.status === "conflicted");
   const branchValue = branches?.current ? `local::${branches.current}` : "";
+  const changelistItems = changelists?.lists ?? [];
+  const activeChangelistId = changelists?.active_id ?? "default";
+
+  useEffect(() => {
+    if (!changelists) return;
+    if (!changelistItems.some((item) => item.id === selectedChangelistId)) {
+      setSelectedChangelistId("default");
+    }
+  }, [changelists, changelistItems, selectedChangelistId]);
+
+  const filteredFiles = files.filter((file) => {
+    if (selectedChangelistId === "default") {
+      return !file.changelist_id || file.changelist_id === "default";
+    }
+    return file.changelist_id === selectedChangelistId;
+  });
 
   return (
     <section className="panel">
@@ -332,125 +528,227 @@ export default function RepositoryPicker() {
           </div>
 
           <div className="status-layout">
-            <div className="status-lists">
-              <div className="status-section">
-                <h3>Staged</h3>
-                {stagedFiles.length === 0 && <p className="muted">No staged files.</p>}
-                <ul>
-                  {stagedFiles.map((file) => (
-                    <li key={`staged-${file.path}`} className="status-item">
+            <aside className="changelist-panel">
+              <div className="changelist-header">
+                <h3>Changelists</h3>
+                <button className="chip" onClick={handleCreateChangelist}>
+                  New
+                </button>
+              </div>
+              <ul className="changelist-list">
+                {changelistItems.map((list) => {
+                  const count = changelistCounts.get(list.id) ?? 0;
+                  const isActive = list.id === activeChangelistId;
+                  return (
+                    <li key={list.id} className="changelist-item">
                       <button
-                        className="file-link"
-                        onClick={() => handleSelectFile(file, "staged")}
+                        className={`changelist-link ${
+                          selectedChangelistId === list.id ? "active" : ""
+                        }`}
+                        onClick={() => setSelectedChangelistId(list.id)}
                       >
-                        {file.path}
+                        {list.name}
                       </button>
-                      <div className="status-actions">
-                        <button className="chip" onClick={() => handleUnstage(file)}>
-                          Unstage
+                      <span className="count-pill">{count}</span>
+                      {isActive ? (
+                        <span className="active-pill">Active</span>
+                      ) : (
+                        <button
+                          className="chip"
+                          onClick={() => handleSetActiveChangelist(list.id)}
+                        >
+                          Set Active
                         </button>
-                      </div>
+                      )}
+                      {list.id !== "default" && (
+                        <div className="changelist-actions">
+                          <button
+                            className="chip"
+                            onClick={() => handleRenameChangelist(list)}
+                          >
+                            Rename
+                          </button>
+                          <button
+                            className="chip"
+                            onClick={() => handleDeleteChangelist(list)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      )}
                     </li>
-                  ))}
-                </ul>
+                  );
+                })}
+              </ul>
+            </aside>
+
+            <div className="file-panel">
+              <div className="file-header">
+                <h3>
+                  {changelistItems.find((item) => item.id === selectedChangelistId)?.name ??
+                    "Files"}
+                </h3>
+                <span className="muted">
+                  {filteredFiles.length} file{filteredFiles.length === 1 ? "" : "s"}
+                </span>
               </div>
 
-              <div className="status-section">
-                <h3>Unstaged</h3>
-                {unstagedFiles.length === 0 && <p className="muted">No unstaged files.</p>}
-                <ul>
-                  {unstagedFiles.map((file) => (
-                    <li key={`unstaged-${file.path}`} className="status-item">
+              <div className="commit-panel">
+                <div className="commit-header">
+                  <div>
+                    <strong>Commit Changelist</strong>
+                    <div className="muted">
+                      {changelistItems.find((item) => item.id === selectedChangelistId)?.name ??
+                        "Selected"}
+                    </div>
+                  </div>
+                  <div className="commit-meta">
+                    {commitLoading ? (
+                      <span className="muted">Previewing…</span>
+                    ) : commitPreview ? (
+                      <span className="muted">
+                        {commitPreview.files.length} file
+                        {commitPreview.files.length === 1 ? "" : "s"}
+                      </span>
+                    ) : (
+                      <span className="muted">No preview</span>
+                    )}
+                  </div>
+                </div>
+
+                <textarea
+                  className="commit-input"
+                  placeholder="Commit message"
+                  value={commitMessage}
+                  onChange={(event) => setCommitMessage(event.target.value)}
+                  rows={3}
+                />
+                <label className="commit-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={commitAmend}
+                    onChange={(event) => setCommitAmend(event.target.checked)}
+                  />
+                  Amend previous commit
+                </label>
+
+                {commitError && <div className="commit-error">{commitError}</div>}
+
+                {commitPreview && (
+                  <div className="commit-preview">
+                    <div className="commit-stats">
+                      <span className="count-pill">Staged {commitPreview.stats.staged}</span>
+                      <span className="count-pill">Unstaged {commitPreview.stats.unstaged}</span>
+                      <span className="count-pill">Untracked {commitPreview.stats.untracked}</span>
+                    </div>
+                    {commitPreview.warnings.length > 0 && (
+                      <ul className="commit-warnings">
+                        {commitPreview.warnings.map((warning) => (
+                          <li key={warning}>{warning}</li>
+                        ))}
+                      </ul>
+                    )}
+                    <ul className="commit-file-list">
+                      {commitPreview.files.map((file) => (
+                        <li key={`commit-${file.path}`}>
+                          {file.path} <span className="muted">({file.status})</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <button
+                  className="button"
+                  onClick={handleCommit}
+                  disabled={
+                    commitBusy || !!commitError || !commitPreview || !commitMessage.trim()
+                  }
+                >
+                  {commitBusy ? "Committing…" : "Commit changelist"}
+                </button>
+              </div>
+
+              {filteredFiles.length === 0 ? (
+                <p className="muted">No files in this changelist.</p>
+              ) : (
+                <ul className="file-list">
+                  {filteredFiles.map((file) => (
+                    <li key={file.path} className="file-row">
                       <button
                         className="file-link"
-                        onClick={() => handleSelectFile(file, "unstaged")}
+                        onClick={() =>
+                          handleSelectFile(
+                            file,
+                            file.status === "staged" ? "staged" : "unstaged"
+                          )
+                        }
                       >
                         {file.path}
                       </button>
+                      <span className="status-pill">{file.status}</span>
+                      <select
+                        className="move-select"
+                        value={file.changelist_id ?? "default"}
+                        onChange={(event) => handleMoveFile(file, event.target.value)}
+                      >
+                        {changelistItems.map((list) => (
+                          <option key={`move-${list.id}`} value={list.id}>
+                            {list.name}
+                          </option>
+                        ))}
+                      </select>
                       <div className="status-actions">
-                        {file.status !== "conflicted" && (
-                          <button className="chip" onClick={() => handleStage(file)}>
-                            Stage
+                        {file.status === "staged" || file.status === "both" ? (
+                          <button className="chip" onClick={() => handleUnstage(file)}>
+                            Unstage
                           </button>
+                        ) : (
+                          file.status !== "conflicted" && (
+                            <button className="chip" onClick={() => handleStage(file)}>
+                              Stage
+                            </button>
+                          )
                         )}
                       </div>
                     </li>
                   ))}
                 </ul>
-              </div>
+              )}
 
-              <div className="status-section">
-                <h3>Untracked</h3>
-                {untrackedFiles.length === 0 && <p className="muted">No untracked files.</p>}
-                <ul>
-                  {untrackedFiles.map((file) => (
-                    <li key={`untracked-${file.path}`} className="status-item">
-                      <button
-                        className="file-link"
-                        onClick={() => handleSelectFile(file, "unstaged")}
-                      >
-                        {file.path}
-                      </button>
-                      <div className="status-actions">
-                        <button className="chip" onClick={() => handleStage(file)}>
-                          Stage
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-
-              <div className="status-section">
-                <h3>Conflicts</h3>
-                {conflictedFiles.length === 0 && <p className="muted">No conflicts.</p>}
-                <ul>
-                  {conflictedFiles.map((file) => (
-                    <li key={`conflict-${file.path}`} className="status-item">
-                      <button
-                        className="file-link"
-                        onClick={() => handleSelectFile(file, "unstaged")}
-                      >
-                        {file.path}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-
-            <div className="diff-panel">
-              <div className="diff-header">
-                <div>
-                  <strong>Diff</strong>
-                  <div className="muted">
-                    {selectedFile ? selectedFile.path : "Select a file to view diff"}
+              <div className="diff-panel">
+                <div className="diff-header">
+                  <div>
+                    <strong>Diff</strong>
+                    <div className="muted">
+                      {selectedFile ? selectedFile.path : "Select a file to view diff"}
+                    </div>
                   </div>
+                  {selectedFile && selectedFile.status !== "untracked" && (
+                    <div className="diff-tabs">
+                      <button
+                        className={`chip ${diffKind === "unstaged" ? "active" : ""}`}
+                        onClick={() => setDiffKind("unstaged")}
+                        disabled={selectedFile.status === "staged"}
+                      >
+                        Unstaged
+                      </button>
+                      <button
+                        className={`chip ${diffKind === "staged" ? "active" : ""}`}
+                        onClick={() => setDiffKind("staged")}
+                        disabled={selectedFile.status === "unstaged"}
+                      >
+                        Staged
+                      </button>
+                    </div>
+                  )}
                 </div>
-                {selectedFile && selectedFile.status !== "untracked" && (
-                  <div className="diff-tabs">
-                    <button
-                      className={`chip ${diffKind === "unstaged" ? "active" : ""}`}
-                      onClick={() => setDiffKind("unstaged")}
-                      disabled={selectedFile.status === "staged"}
-                    >
-                      Unstaged
-                    </button>
-                    <button
-                      className={`chip ${diffKind === "staged" ? "active" : ""}`}
-                      onClick={() => setDiffKind("staged")}
-                      disabled={selectedFile.status === "unstaged"}
-                    >
-                      Staged
-                    </button>
-                  </div>
-                )}
+                <pre className="diff-output">
+                  {diffLoading
+                    ? "Loading diff..."
+                    : diffText || "No diff to display."}
+                </pre>
               </div>
-              <pre className="diff-output">
-                {diffLoading
-                  ? "Loading diff..."
-                  : diffText || "No diff to display."}
-              </pre>
             </div>
           </div>
         </div>

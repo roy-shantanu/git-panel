@@ -1,6 +1,8 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use git2::{
     build::CheckoutBuilder, BranchType, DiffFormat, DiffOptions, FetchOptions, ObjectType,
@@ -8,9 +10,145 @@ use git2::{
 };
 
 use crate::model::{
-    BranchList, CheckoutResult, CheckoutTarget, CheckoutTargetKind, RepoCounts, RepoDiffKind,
-    RepoError, RepoHead, RepoId, RepoStatus, RepoSummary, StatusFile, StatusKind, UnifiedDiffText,
+    BranchList, CheckoutResult, CheckoutTarget, CheckoutTargetKind, CommitOptions, CommitResult,
+    RepoCounts, RepoDiffKind, RepoError, RepoHead, RepoId, RepoStatus, RepoSummary, StatusFile,
+    StatusKind, UnifiedDiffText,
 };
+
+pub fn commit_changelist(
+    summary: &RepoSummary,
+    files: &[StatusFile],
+    message: &str,
+    options: &CommitOptions,
+) -> Result<CommitResult, String> {
+    if files.is_empty() {
+        return Err("No files to commit.".to_string());
+    }
+    if message.trim().is_empty() {
+        return Err("Commit message is required.".to_string());
+    }
+
+    let repo = Repository::open(&summary.path).map_err(|e| e.to_string())?;
+    let git_dir = repo.path();
+    let tmp_dir = git_dir.join("gitpanel").join("tmp");
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "clock error".to_string())?
+        .as_millis();
+    let index_path = tmp_dir.join(format!("index-{millis}"));
+
+    let head_oid = run_git(&summary.path, &["rev-parse", "--verify", "HEAD"], None).ok();
+    let head_oid = head_oid.map(|value| value.trim().to_string());
+
+    let index_env = Some(("GIT_INDEX_FILE", index_path.to_string_lossy().to_string()));
+
+    if head_oid.is_some() {
+        run_git(
+            &summary.path,
+            &["read-tree", "HEAD"],
+            index_env.as_ref(),
+        )?;
+    } else {
+        run_git(
+            &summary.path,
+            &["read-tree", "--empty"],
+            index_env.as_ref(),
+        )?;
+    }
+
+    let mut args = vec!["add", "-A", "--"];
+    for file in files {
+        if matches!(file.status, StatusKind::Conflicted) {
+            return Err("Changelist contains conflicted files.".to_string());
+        }
+        args.push(&file.path);
+    }
+    run_git(&summary.path, &args, index_env.as_ref())?;
+
+    let tree_oid = run_git(&summary.path, &["write-tree"], index_env.as_ref())?;
+    let tree_oid = tree_oid.trim();
+
+    let commit_oid = if options.amend {
+        let head_oid = head_oid.clone().ok_or_else(|| "Cannot amend without existing commits.".to_string())?;
+        let parents_line =
+            run_git(&summary.path, &["rev-list", "--parents", "-n", "1", "HEAD"], None)?;
+        let mut parts = parents_line.split_whitespace();
+        let _ = parts.next();
+        let parents: Vec<&str> = parts.collect();
+
+        let mut commit_args = vec!["commit-tree", tree_oid, "-m", message];
+        for parent in parents {
+            commit_args.push("-p");
+            commit_args.push(parent);
+        }
+        let new_oid = run_git(&summary.path, &commit_args, None)?;
+        update_ref(&summary.path, &head_oid, new_oid.trim())?;
+        new_oid.trim().to_string()
+    } else if let Some(head_oid) = head_oid.clone() {
+        let commit_args = ["commit-tree", tree_oid, "-m", message, "-p", head_oid.as_str()];
+        let new_oid = run_git(&summary.path, &commit_args, None)?;
+        update_ref(&summary.path, &head_oid, new_oid.trim())?;
+        new_oid.trim().to_string()
+    } else {
+        let commit_args = ["commit-tree", tree_oid, "-m", message];
+        let new_oid = run_git(&summary.path, &commit_args, None)?;
+        update_ref(&summary.path, "", new_oid.trim())?;
+        new_oid.trim().to_string()
+    };
+
+    let _ = std::fs::remove_file(&index_path);
+
+    let head = repo_head(&repo)?;
+    Ok(CommitResult {
+        head,
+        commit_id: commit_oid,
+        committed_paths: files.iter().map(|file| file.path.clone()).collect(),
+    })
+}
+
+fn run_git(
+    repo_path: &str,
+    args: &[&str],
+    env: Option<&(&str, String)>,
+) -> Result<String, String> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repo_path).args(args);
+    if let Some((key, value)) = env {
+        command.env(key, value);
+    }
+    let output = command.output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let message = if stderr.is_empty() { stdout } else { stderr };
+        return Err(if message.is_empty() {
+            "git command failed".to_string()
+        } else {
+            message
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn update_ref(repo_path: &str, old_oid: &str, new_oid: &str) -> Result<(), String> {
+    let head_ref = run_git(repo_path, &["symbolic-ref", "-q", "HEAD"], None)
+        .ok()
+        .map(|value| value.trim().to_string());
+
+    if let Some(reference) = head_ref {
+        if old_oid.is_empty() {
+            run_git(repo_path, &["update-ref", &reference, new_oid], None)?;
+        } else {
+            run_git(repo_path, &["update-ref", &reference, new_oid, old_oid], None)?;
+        }
+    } else if old_oid.is_empty() {
+        run_git(repo_path, &["update-ref", "HEAD", new_oid], None)?;
+    } else {
+        run_git(repo_path, &["update-ref", "HEAD", new_oid, old_oid], None)?;
+    }
+    Ok(())
+}
 
 pub fn open_repo(path: &str) -> RepoSummary {
     let name = Path::new(path)
@@ -87,6 +225,8 @@ pub fn status(summary: &RepoSummary) -> Result<RepoStatus, String> {
                 path,
                 status: kind,
                 old_path,
+                changelist_id: None,
+                changelist_name: None,
             });
         }
     }

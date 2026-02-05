@@ -2,11 +2,15 @@ use std::sync::Mutex;
 
 use tauri::{AppHandle, State};
 
+use crate::changelist;
 use crate::git;
 use crate::model::{
     AppVersion, BranchCreateResult, BranchList, CheckoutResult, RepoBranchListRequest,
     RepoCheckoutRequest, RepoCreateBranchRequest, RepoDiffRequest, RepoFetchRequest, RepoOpenRequest,
-    RepoPathRequest, RepoStatusRequest, RepoSummary, UnifiedDiffText,
+    Changelist, ChangelistAssignRequest, ChangelistCreateRequest, ChangelistIdRequest,
+    ChangelistRenameRequest, ChangelistState, ChangelistUnassignRequest, CommitExecuteRequest,
+    CommitPreview, CommitPrepareRequest, CommitResult, RepoPathRequest, RepoStatusRequest,
+    RepoSummary, UnifiedDiffText,
 };
 use crate::store::{now_ms, AppState};
 
@@ -48,9 +52,15 @@ pub async fn repo_status(
     };
 
     // Compute in a blocking task; only the most recent job is allowed to update the cache.
-    let status = tauri::async_runtime::spawn_blocking(move || git::status(&summary))
+    let summary_for_job = summary.clone();
+    let status = tauri::async_runtime::spawn_blocking(move || git::status(&summary_for_job))
         .await
         .map_err(|_| "status job failed".to_string())??;
+
+    let mut status = status;
+    if let Ok(mut cl_state) = changelist::load_state(&summary) {
+        let _ = changelist::apply_to_status(&summary, &mut cl_state, &mut status);
+    }
 
     let mut guard = state.lock().map_err(|_| "state lock failed".to_string())?;
     if guard.job_queue.is_current(&req.repo_id, token) {
@@ -158,7 +168,10 @@ pub async fn repo_checkout(
         })??;
 
     // Update cached status after checkout so UI refreshes quickly.
-    if let Ok(status) = git::status(&summary) {
+    if let Ok(mut status) = git::status(&summary) {
+        if let Ok(mut cl_state) = changelist::load_state(&summary) {
+            let _ = changelist::apply_to_status(&summary, &mut cl_state, &mut status);
+        }
         if let Ok(mut guard) = state.lock() {
             guard.set_status(status);
         }
@@ -194,4 +207,287 @@ pub async fn repo_fetch(
     let remote = req.remote.clone().unwrap_or_else(|| "origin".to_string());
     let updated = git::fetch(&summary, req.remote.as_deref())?;
     Ok(crate::model::FetchResult { remote, updated })
+}
+
+#[tauri::command]
+pub async fn cl_list(
+    req: RepoStatusRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<ChangelistState, String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    changelist::load_state(&summary)
+}
+
+#[tauri::command]
+pub async fn cl_create(
+    req: ChangelistCreateRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Changelist, String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    changelist::create(&summary, &req.name)
+}
+
+#[tauri::command]
+pub async fn cl_rename(
+    req: ChangelistRenameRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    changelist::rename(&summary, &req.id, &req.name)?;
+    update_cached_changelists(&summary, &state)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cl_delete(
+    req: ChangelistIdRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    changelist::delete(&summary, &req.id)?;
+    update_cached_changelists(&summary, &state)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cl_set_active(
+    req: ChangelistIdRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    changelist::set_active(&summary, &req.id)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cl_assign_files(
+    req: ChangelistAssignRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    changelist::assign_files(&summary, &req.changelist_id, &req.paths)?;
+    update_cached_changelists(&summary, &state)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cl_unassign_files(
+    req: ChangelistUnassignRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    changelist::unassign_files(&summary, &req.paths)?;
+    update_cached_changelists(&summary, &state)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn commit_prepare(
+    req: CommitPrepareRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<CommitPreview, String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    build_commit_preview(&summary, &req.changelist_id)
+}
+
+#[tauri::command]
+pub async fn commit_execute(
+    req: CommitExecuteRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<CommitResult, String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+
+    let preview = build_commit_preview(&summary, &req.changelist_id)?;
+    let options = req.options;
+    let message = req.message.clone();
+    let files = preview.files.clone();
+    let summary_for_job = summary.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        git::commit_changelist(&summary_for_job, &files, &message, &options)
+    })
+    .await
+    .map_err(|_| "commit job failed".to_string())??;
+
+    let mut status = git::status(&summary)?;
+    if let Ok(mut cl_state) = changelist::load_state(&summary) {
+        let _ = changelist::apply_to_status(&summary, &mut cl_state, &mut status);
+    }
+
+    let dirty_paths: std::collections::HashSet<String> =
+        status.files.iter().map(|file| file.path.clone()).collect();
+    let clean_paths: Vec<String> = result
+        .committed_paths
+        .iter()
+        .filter(|path| !dirty_paths.contains(*path))
+        .cloned()
+        .collect();
+    changelist::clear_assignments(&summary, &clean_paths)?;
+    if let Ok(mut guard) = state.lock() {
+        guard.set_status(status);
+    }
+    update_cached_changelists(&summary, &state)?;
+
+    Ok(result)
+}
+
+fn update_cached_changelists(
+    summary: &RepoSummary,
+    state: &State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let mut guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+    let cached = guard.get_status(&summary.repo_id);
+    if let Some(mut cached) = cached {
+        if let Ok(mut cl_state) = changelist::load_state(summary) {
+            let _ = changelist::apply_to_status(summary, &mut cl_state, &mut cached.status);
+            guard.set_status(cached.status);
+        }
+    }
+    Ok(())
+}
+
+fn build_commit_preview(
+    summary: &RepoSummary,
+    changelist_id: &str,
+) -> Result<CommitPreview, String> {
+    let mut status = git::status(summary)?;
+    let mut cl_state = changelist::load_state(summary)?;
+    if !cl_state.lists.iter().any(|item| item.id == changelist_id) {
+        return Err("unknown changelist id".to_string());
+    }
+    let _ = changelist::apply_to_status(summary, &mut cl_state, &mut status);
+
+    let files: Vec<_> = status
+        .files
+        .into_iter()
+        .filter(|file| file.changelist_id.as_deref() == Some(changelist_id))
+        .collect();
+    preview_from_files(changelist_id, files)
+}
+
+fn preview_from_files(
+    changelist_id: &str,
+    files: Vec<crate::model::StatusFile>,
+) -> Result<CommitPreview, String> {
+    if files.is_empty() {
+        return Err("Changelist has no files.".to_string());
+    }
+    if files.iter().any(|file| matches!(file.status, crate::model::StatusKind::Conflicted)) {
+        return Err("Changelist contains conflicted files.".to_string());
+    }
+
+    let mut stats = crate::model::RepoCounts {
+        staged: 0,
+        unstaged: 0,
+        untracked: 0,
+        conflicted: 0,
+    };
+    let mut warnings = Vec::new();
+    let mut has_mixed = false;
+
+    for file in &files {
+        match file.status {
+            crate::model::StatusKind::Staged => stats.staged += 1,
+            crate::model::StatusKind::Unstaged => stats.unstaged += 1,
+            crate::model::StatusKind::Both => {
+                stats.staged += 1;
+                stats.unstaged += 1;
+                has_mixed = true;
+            }
+            crate::model::StatusKind::Untracked => stats.untracked += 1,
+            crate::model::StatusKind::Conflicted => stats.conflicted += 1,
+        }
+    }
+
+    if has_mixed {
+        warnings.push(
+            "Some files have both staged and unstaged changes; the commit will use the working tree version.".to_string(),
+        );
+    }
+
+    Ok(CommitPreview {
+        changelist_id: changelist_id.to_string(),
+        files,
+        stats,
+        warnings,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preview_from_files;
+    use crate::model::{StatusFile, StatusKind};
+
+    #[test]
+    fn preview_rejects_conflicts() {
+        let files = vec![StatusFile {
+            path: "src/main.rs".to_string(),
+            status: StatusKind::Conflicted,
+            old_path: None,
+            changelist_id: Some("default".to_string()),
+            changelist_name: Some("Default".to_string()),
+        }];
+
+        let result = preview_from_files("default", files);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn preview_counts_files() {
+        let files = vec![
+            StatusFile {
+                path: "src/a.rs".to_string(),
+                status: StatusKind::Staged,
+                old_path: None,
+                changelist_id: Some("default".to_string()),
+                changelist_name: Some("Default".to_string()),
+            },
+            StatusFile {
+                path: "src/b.rs".to_string(),
+                status: StatusKind::Untracked,
+                old_path: None,
+                changelist_id: Some("default".to_string()),
+                changelist_name: Some("Default".to_string()),
+            },
+        ];
+
+        let preview = preview_from_files("default", files).expect("preview");
+        assert_eq!(preview.stats.staged, 1);
+        assert_eq!(preview.stats.untracked, 1);
+    }
 }

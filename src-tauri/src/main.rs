@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
+mod changelist;
 mod git;
 mod jobs;
 mod model;
@@ -26,6 +27,15 @@ fn main() {
             api::repo_checkout,
             api::repo_create_branch,
             api::repo_fetch,
+            api::cl_list,
+            api::cl_create,
+            api::cl_rename,
+            api::cl_delete,
+            api::cl_set_active,
+            api::cl_assign_files,
+            api::cl_unassign_files,
+            api::commit_prepare,
+            api::commit_execute,
             api::repo_list_recent,
             api::app_version
         ])

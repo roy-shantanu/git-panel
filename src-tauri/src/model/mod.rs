@@ -146,6 +146,10 @@ pub struct StatusFile {
     pub status: StatusKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub old_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changelist_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changelist_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,4 +178,86 @@ pub struct AppVersion {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnifiedDiffText {
     pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Changelist {
+    pub id: String,
+    pub name: String,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangelistState {
+    pub lists: Vec<Changelist>,
+    pub active_id: String,
+    pub assignments: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangelistIdRequest {
+    pub repo_id: RepoId,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangelistCreateRequest {
+    pub repo_id: RepoId,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangelistRenameRequest {
+    pub repo_id: RepoId,
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangelistAssignRequest {
+    pub repo_id: RepoId,
+    pub changelist_id: String,
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangelistUnassignRequest {
+    pub repo_id: RepoId,
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitPrepareRequest {
+    pub repo_id: RepoId,
+    pub changelist_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CommitOptions {
+    #[serde(default)]
+    pub amend: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitExecuteRequest {
+    pub repo_id: RepoId,
+    pub changelist_id: String,
+    pub message: String,
+    #[serde(default)]
+    pub options: CommitOptions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitPreview {
+    pub changelist_id: String,
+    pub files: Vec<StatusFile>,
+    pub stats: RepoCounts,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitResult {
+    pub head: RepoHead,
+    pub commit_id: String,
+    pub committed_paths: Vec<String>,
 }

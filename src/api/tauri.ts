@@ -3,6 +3,11 @@ import type {
   AppVersion,
   BranchCreateResult,
   BranchList,
+  Changelist,
+  ChangelistState,
+  CommitOptions,
+  CommitPreview,
+  CommitResult,
   CheckoutResult,
   CheckoutTarget,
   FetchResult,
@@ -72,4 +77,52 @@ export async function repoFetch(
   remote?: string
 ): Promise<FetchResult> {
   return invoke("repo_fetch", { req: { repo_id, remote } });
+}
+
+export async function clList(repo_id: string): Promise<ChangelistState> {
+  return invoke("cl_list", { req: { repo_id } });
+}
+
+export async function clCreate(repo_id: string, name: string): Promise<Changelist> {
+  return invoke("cl_create", { req: { repo_id, name } });
+}
+
+export async function clRename(repo_id: string, id: string, name: string): Promise<void> {
+  return invoke("cl_rename", { req: { repo_id, id, name } });
+}
+
+export async function clDelete(repo_id: string, id: string): Promise<void> {
+  return invoke("cl_delete", { req: { repo_id, id } });
+}
+
+export async function clSetActive(repo_id: string, id: string): Promise<void> {
+  return invoke("cl_set_active", { req: { repo_id, id } });
+}
+
+export async function clAssignFiles(
+  repo_id: string,
+  changelist_id: string,
+  paths: string[]
+): Promise<void> {
+  return invoke("cl_assign_files", { req: { repo_id, changelist_id, paths } });
+}
+
+export async function clUnassignFiles(repo_id: string, paths: string[]): Promise<void> {
+  return invoke("cl_unassign_files", { req: { repo_id, paths } });
+}
+
+export async function commitPrepare(
+  repo_id: string,
+  changelist_id: string
+): Promise<CommitPreview> {
+  return invoke("commit_prepare", { req: { repo_id, changelist_id } });
+}
+
+export async function commitExecute(
+  repo_id: string,
+  changelist_id: string,
+  message: string,
+  options?: CommitOptions
+): Promise<CommitResult> {
+  return invoke("commit_execute", { req: { repo_id, changelist_id, message, options } });
 }
