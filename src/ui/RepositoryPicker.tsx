@@ -378,11 +378,10 @@ export default function RepositoryPicker() {
         amend: commitAmend
       });
       setCommitMessage("");
+      setCommitPreview(null);
+      setCommitError(null);
       setCommitAmend(false);
-      const next = await repoStatus(repo.repo_id);
-      setStatus(next);
-      const clState = await clList(repo.repo_id);
-      setChangelists(clState);
+      await handleRefresh();
       setToast("Changelist committed.");
     } catch (error) {
       const message =
@@ -531,9 +530,14 @@ export default function RepositoryPicker() {
             <aside className="changelist-panel">
               <div className="changelist-header">
                 <h3>Changelists</h3>
-                <button className="chip" onClick={handleCreateChangelist}>
-                  New
-                </button>
+                <div className="changelist-header-actions">
+                  <button className="chip" onClick={handleRefresh} disabled={!repo}>
+                    Refresh
+                  </button>
+                  <button className="chip" onClick={handleCreateChangelist}>
+                    New
+                  </button>
+                </div>
               </div>
               <ul className="changelist-list">
                 {changelistItems.map((list) => {

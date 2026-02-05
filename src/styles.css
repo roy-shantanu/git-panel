@@ -167,6 +167,11 @@ body {
   font-size: 15px;
 }
 
+.changelist-header-actions {
+  display: flex;
+  gap: 6px;
+}
+
 .changelist-list {
   list-style: none;
   padding: 0;
