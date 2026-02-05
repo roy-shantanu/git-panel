@@ -4,6 +4,9 @@ import { repoListRecent, repoOpen, repoStatus } from "../api/tauri";
 import { useAppStore } from "../state/store";
 
 const POLL_INTERVAL_MS = 4000;
+const isTauri =
+  typeof window !== "undefined" &&
+  ("__TAURI__" in window || "__TAURI_INTERNALS__" in window);
 
 export default function RepositoryPicker() {
   const { repo, status, recent, setRepo, setStatus, setRecent } = useAppStore();
@@ -43,7 +46,23 @@ export default function RepositoryPicker() {
   }, [repo?.repo_id, setStatus]);
 
   const handlePick = async () => {
-    const selection = await open({ directory: true, multiple: false });
+    if (!isTauri) {
+      console.warn("File picker requires the Tauri app runtime.");
+      alert(
+        "The native folder picker only works in the Tauri app. Run `npm run tauri dev`."
+      );
+      return;
+    }
+
+    let selection: string | string[] | null = null;
+    try {
+      selection = await open({ directory: true, multiple: false });
+    } catch (error) {
+      console.error("dialog.open failed", error);
+      alert("Could not open the folder picker. Check the console for details.");
+      return;
+    }
+
     if (!selection || Array.isArray(selection)) return;
 
     try {
