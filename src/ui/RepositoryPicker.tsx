@@ -4,6 +4,42 @@ import { listen } from "@tauri-apps/api/event";
 import { Diff, Hunk, parseDiff } from "react-diff-view";
 import "react-diff-view/style/index.css";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from "../components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "../components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from "../components/ui/dropdown-menu";
+import { Input } from "../components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "../components/ui/select";
+import { useTheme } from "../components/ThemeProvider";
+import {
   clAssignFiles,
   clAssignHunks,
   clCreate,
@@ -50,6 +86,7 @@ const isTauri =
 
 export default function RepositoryPicker() {
   const { repo, status, recent, setRepo, setStatus, setRecent } = useAppStore();
+  const { theme, toggleTheme } = useTheme();
   const [polling, setPolling] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<StatusFile | null>(null);
@@ -76,10 +113,27 @@ export default function RepositoryPicker() {
   const [commitAmend, setCommitAmend] = useState(false);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
-  const repoLabel = useMemo(() => {
-    if (!repo) return "No repository selected";
-    return `${repo.name} (${repo.path})`;
-  }, [repo]);
+  const [infoDialog, setInfoDialog] = useState<{
+    title: string;
+    description: string;
+  } | null>(null);
+  const [worktreeDialogOpen, setWorktreeDialogOpen] = useState(false);
+  const [worktreePath, setWorktreePath] = useState("");
+  const [worktreeBranch, setWorktreeBranch] = useState("");
+  const [worktreeCreateBranch, setWorktreeCreateBranch] = useState(false);
+  const [worktreeDialogError, setWorktreeDialogError] = useState<string | null>(null);
+  const [removeWorktreeOpen, setRemoveWorktreeOpen] = useState(false);
+  const [createBranchOpen, setCreateBranchOpen] = useState(false);
+  const [createBranchName, setCreateBranchName] = useState("");
+  const [createBranchError, setCreateBranchError] = useState<string | null>(null);
+  const [createChangelistOpen, setCreateChangelistOpen] = useState(false);
+  const [createChangelistName, setCreateChangelistName] = useState("");
+  const [createChangelistError, setCreateChangelistError] = useState<string | null>(null);
+  const [renameChangelistTarget, setRenameChangelistTarget] = useState<Changelist | null>(null);
+  const [renameChangelistName, setRenameChangelistName] = useState("");
+  const [renameChangelistError, setRenameChangelistError] = useState<string | null>(null);
+  const [deleteChangelistTarget, setDeleteChangelistTarget] =
+    useState<Changelist | null>(null);
 
   const files = status?.files ?? [];
 
@@ -300,9 +354,11 @@ export default function RepositoryPicker() {
   const handlePick = async () => {
     if (!isTauri) {
       console.warn("File picker requires the Tauri app runtime.");
-      alert(
-        "The native folder picker only works in the Tauri app. Run `npm run tauri dev`."
-      );
+      setInfoDialog({
+        title: "Run in Tauri",
+        description:
+          "The native folder picker only works in the Tauri app. Run npm run tauri dev."
+      });
       return;
     }
 
@@ -311,7 +367,10 @@ export default function RepositoryPicker() {
       selection = await open({ directory: true, multiple: false });
     } catch (error) {
       console.error("dialog.open failed", error);
-      alert("Could not open the folder picker. Check the console for details.");
+      setInfoDialog({
+        title: "Folder Picker Failed",
+        description: "Could not open the folder picker. Check the console for details."
+      });
       return;
     }
 
@@ -369,47 +428,18 @@ export default function RepositoryPicker() {
     }
   };
 
-  const handleAddWorktree = async () => {
+  const handleAddWorktree = () => {
     if (!repo) return;
-    const path = window.prompt("New worktree path");
-    if (!path) return;
-    const branchName = window.prompt("Branch name for worktree");
-    if (!branchName) return;
-    const newBranch = window.confirm("Create new branch?");
-    setWorktreeBusy(true);
-    try {
-      await wtAdd(repo.repo_root, path, branchName, newBranch);
-      const wt = await wtList(repo.repo_root);
-      setWorktrees(wt.worktrees);
-      await handleSelectWorktree(path);
-      setToast("Worktree added.");
-    } catch (error) {
-      console.error("wt_add failed", error);
-      setToast("Add worktree failed.");
-    } finally {
-      setWorktreeBusy(false);
-    }
+    setWorktreePath("");
+    setWorktreeBranch("");
+    setWorktreeCreateBranch(false);
+    setWorktreeDialogError(null);
+    setWorktreeDialogOpen(true);
   };
 
-  const handleRemoveWorktree = async () => {
+  const handleRemoveWorktree = () => {
     if (!repo) return;
-    if (!window.confirm(`Remove worktree at ${repo.worktree_path}?`)) return;
-    setWorktreeBusy(true);
-    try {
-      await wtRemove(repo.repo_root, repo.worktree_path);
-      const wt = await wtList(repo.repo_root);
-      setWorktrees(wt.worktrees);
-      const nextPath = wt.worktrees[0]?.path;
-      if (nextPath) {
-        await handleSelectWorktree(nextPath);
-      }
-      setToast("Worktree removed.");
-    } catch (error) {
-      console.error("wt_remove failed", error);
-      setToast("Remove worktree failed.");
-    } finally {
-      setWorktreeBusy(false);
-    }
+    setRemoveWorktreeOpen(true);
   };
 
   const handlePruneWorktrees = async () => {
@@ -450,17 +480,11 @@ export default function RepositoryPicker() {
     }
   };
 
-  const handleCreateBranch = async () => {
+  const handleCreateBranch = () => {
     if (!repo) return;
-    const name = window.prompt("New branch name");
-    if (!name) return;
-    try {
-      await repoCreateBranch(repo.repo_id, name);
-      await handleCheckout("local", name);
-    } catch (error) {
-      setToast("Create branch failed. See console for details.");
-      console.error("repo_create_branch failed", error);
-    }
+    setCreateBranchName("");
+    setCreateBranchError(null);
+    setCreateBranchOpen(true);
   };
 
   const handleFetch = async () => {
@@ -484,41 +508,157 @@ export default function RepositoryPicker() {
     setChangelists(clState);
   };
 
-  const handleCreateChangelist = async () => {
+  const handleCreateChangelist = () => {
     if (!repo) return;
-    const name = window.prompt("New changelist name");
-    if (!name) return;
+    setCreateChangelistName("");
+    setCreateChangelistError(null);
+    setCreateChangelistOpen(true);
+  };
+
+  const handleRenameChangelist = (list: Changelist) => {
+    if (!repo) return;
+    setRenameChangelistTarget(list);
+    setRenameChangelistName(list.name);
+    setRenameChangelistError(null);
+  };
+
+  const handleDeleteChangelist = (list: Changelist) => {
+    if (!repo) return;
+    setDeleteChangelistTarget(list);
+  };
+
+  const confirmAddWorktree = async () => {
+    if (!repo) return;
+    const path = worktreePath.trim();
+    const branchName = worktreeBranch.trim();
+    if (!path || !branchName) {
+      setWorktreeDialogError("Path and branch name are required.");
+      return;
+    }
+    setWorktreeBusy(true);
+    try {
+      await wtAdd(repo.repo_root, path, branchName, worktreeCreateBranch);
+      const wt = await wtList(repo.repo_root);
+      setWorktrees(wt.worktrees);
+      await handleSelectWorktree(path);
+      setToast("Worktree added.");
+      setWorktreeDialogOpen(false);
+    } catch (error) {
+      console.error("wt_add failed", error);
+      setWorktreeDialogError("Add worktree failed.");
+      setToast("Add worktree failed.");
+    } finally {
+      setWorktreeBusy(false);
+    }
+  };
+
+  const handleSelectRecent = async (path: string) => {
+    if (!path) return;
+    try {
+      const summary = await repoOpen(path);
+      setRepo(summary);
+      const recents = await repoListRecent();
+      setRecent(recents);
+    } catch (error) {
+      console.error("repo_open failed", error);
+      setToast("Open repository failed.");
+    }
+  };
+
+  const confirmRemoveWorktree = async () => {
+    if (!repo) return;
+    setWorktreeBusy(true);
+    try {
+      await wtRemove(repo.repo_root, repo.worktree_path);
+      const wt = await wtList(repo.repo_root);
+      setWorktrees(wt.worktrees);
+      const nextPath = wt.worktrees[0]?.path;
+      if (nextPath) {
+        await handleSelectWorktree(nextPath);
+      }
+      setToast("Worktree removed.");
+      setRemoveWorktreeOpen(false);
+    } catch (error) {
+      console.error("wt_remove failed", error);
+      setToast("Remove worktree failed.");
+    } finally {
+      setWorktreeBusy(false);
+    }
+  };
+
+  const confirmCreateBranch = async () => {
+    if (!repo) return;
+    const name = createBranchName.trim();
+    if (!name) {
+      setCreateBranchError("Branch name is required.");
+      return;
+    }
+    try {
+      await repoCreateBranch(repo.repo_id, name);
+      setCreateBranchOpen(false);
+      setCreateBranchName("");
+      setCreateBranchError(null);
+      await handleCheckout("local", name);
+    } catch (error) {
+      setCreateBranchError("Create branch failed. See console for details.");
+      setToast("Create branch failed. See console for details.");
+      console.error("repo_create_branch failed", error);
+    }
+  };
+
+  const confirmCreateChangelist = async () => {
+    if (!repo) return;
+    const name = createChangelistName.trim();
+    if (!name) {
+      setCreateChangelistError("Changelist name is required.");
+      return;
+    }
     try {
       await clCreate(repo.repo_id, name);
       await refreshChangelists();
+      setCreateChangelistOpen(false);
+      setCreateChangelistName("");
+      setCreateChangelistError(null);
     } catch (error) {
       console.error("cl_create failed", error);
+      setCreateChangelistError("Create changelist failed.");
       setToast("Create changelist failed.");
     }
   };
 
-  const handleRenameChangelist = async (list: Changelist) => {
-    if (!repo) return;
-    const name = window.prompt("Rename changelist", list.name);
-    if (!name || name === list.name) return;
+  const confirmRenameChangelist = async () => {
+    if (!repo || !renameChangelistTarget) return;
+    const name = renameChangelistName.trim();
+    if (!name) {
+      setRenameChangelistError("Changelist name is required.");
+      return;
+    }
+    if (name === renameChangelistTarget.name) {
+      setRenameChangelistError("Name is unchanged.");
+      return;
+    }
     try {
-      await clRename(repo.repo_id, list.id, name);
+      await clRename(repo.repo_id, renameChangelistTarget.id, name);
       await refreshChangelists();
+      setRenameChangelistTarget(null);
+      setRenameChangelistName("");
+      setRenameChangelistError(null);
     } catch (error) {
       console.error("cl_rename failed", error);
+      setRenameChangelistError("Rename changelist failed.");
       setToast("Rename changelist failed.");
     }
   };
 
-  const handleDeleteChangelist = async (list: Changelist) => {
-    if (!repo) return;
-    if (!window.confirm(`Delete changelist "${list.name}"?`)) return;
+  const confirmDeleteChangelist = async () => {
+    if (!repo || !deleteChangelistTarget) return;
     try {
-      await clDelete(repo.repo_id, list.id);
-      if (selectedChangelistId === list.id) {
+      await clDelete(repo.repo_id, deleteChangelistTarget.id);
+      if (selectedChangelistId === deleteChangelistTarget.id) {
         setSelectedChangelistId("default");
       }
       await refreshChangelists();
+      setDeleteChangelistTarget(null);
     } catch (error) {
       console.error("cl_delete failed", error);
       setToast("Delete changelist failed.");
@@ -723,131 +863,394 @@ export default function RepositoryPicker() {
   }, [diffHunks]);
 
   return (
-    <section className="panel">
-      <h2>Repository Picker</h2>
-      {toast && <div className="toast">{toast}</div>}
-      <div className="row">
-        <button className="button" onClick={handlePick}>
-          Choose Folder
-        </button>
-        <span className="muted">{repoLabel}</span>
+    <div className="ide-shell">
+      <aside className="ide-sidebar">
+        <div className="nav-section">
+          <button className="nav-icon active" aria-label="Repository">
+            RP
+          </button>
+          <button className="nav-icon" aria-label="Changes">
+            CL
+          </button>
+          <button className="nav-icon" aria-label="Diffs">
+            DF
+          </button>
+        </div>
+        <div className="nav-section">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="nav-icon" aria-label="Settings">
+                SET
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" side="right">
+              <DropdownMenuLabel>Settings</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuCheckboxItem
+                checked={theme === "dark"}
+                onCheckedChange={(checked) => {
+                  if ((checked === true) !== (theme === "dark")) {
+                    toggleTheme();
+                  }
+                }}
+              >
+                Dark theme
+              </DropdownMenuCheckboxItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </aside>
+
+      <div className="ide-main">
+        {toast && <div className="toast toast-floating">{toast}</div>}
+      <Dialog
+        open={!!infoDialog}
+        onOpenChange={(open) => {
+          if (!open) setInfoDialog(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{infoDialog?.title}</DialogTitle>
+            <DialogDescription>{infoDialog?.description}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <button className="button">OK</button>
+            </DialogClose>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={worktreeDialogOpen}
+        onOpenChange={(open) => {
+          setWorktreeDialogOpen(open);
+          if (!open) {
+            setWorktreeDialogError(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add Worktree</DialogTitle>
+            <DialogDescription>
+              Add a new worktree path and branch. You can create a new branch
+              at the same time.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="dialog-form">
+            <div className="dialog-field">
+              <label className="dialog-label" htmlFor="worktree-path">
+                Worktree path
+              </label>
+              <Input
+                id="worktree-path"
+                placeholder="C:\\path\\to\\worktree"
+                value={worktreePath}
+                onChange={(event) => {
+                  setWorktreePath(event.target.value);
+                  if (worktreeDialogError) setWorktreeDialogError(null);
+                }}
+              />
+            </div>
+            <div className="dialog-field">
+              <label className="dialog-label" htmlFor="worktree-branch">
+                Branch name
+              </label>
+              <Input
+                id="worktree-branch"
+                placeholder="feature/my-branch"
+                value={worktreeBranch}
+                onChange={(event) => {
+                  setWorktreeBranch(event.target.value);
+                  if (worktreeDialogError) setWorktreeDialogError(null);
+                }}
+              />
+            </div>
+            <label className="commit-checkbox">
+              <input
+                type="checkbox"
+                checked={worktreeCreateBranch}
+                onChange={(event) => setWorktreeCreateBranch(event.target.checked)}
+              />
+              Create new branch for worktree
+            </label>
+            {worktreeDialogError && (
+              <div className="dialog-error">{worktreeDialogError}</div>
+            )}
+          </div>
+          <DialogFooter>
+            <DialogClose asChild>
+              <button className="button secondary" disabled={worktreeBusy}>
+                Cancel
+              </button>
+            </DialogClose>
+            <button className="button" onClick={confirmAddWorktree} disabled={worktreeBusy}>
+              {worktreeBusy ? "Adding..." : "Add worktree"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={createBranchOpen}
+        onOpenChange={(open) => {
+          setCreateBranchOpen(open);
+          if (!open) {
+            setCreateBranchError(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create Branch</DialogTitle>
+            <DialogDescription>Enter a new branch name.</DialogDescription>
+          </DialogHeader>
+          <div className="dialog-form">
+            <div className="dialog-field">
+              <label className="dialog-label" htmlFor="create-branch-name">
+                Branch name
+              </label>
+              <Input
+                id="create-branch-name"
+                placeholder="feature/my-branch"
+                value={createBranchName}
+                onChange={(event) => {
+                  setCreateBranchName(event.target.value);
+                  if (createBranchError) setCreateBranchError(null);
+                }}
+              />
+            </div>
+            {createBranchError && <div className="dialog-error">{createBranchError}</div>}
+          </div>
+          <DialogFooter>
+            <DialogClose asChild>
+              <button className="button secondary">Cancel</button>
+            </DialogClose>
+            <button className="button" onClick={confirmCreateBranch}>
+              Create branch
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={createChangelistOpen}
+        onOpenChange={(open) => {
+          setCreateChangelistOpen(open);
+          if (!open) {
+            setCreateChangelistError(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create Changelist</DialogTitle>
+            <DialogDescription>Name the new changelist.</DialogDescription>
+          </DialogHeader>
+          <div className="dialog-form">
+            <div className="dialog-field">
+              <label className="dialog-label" htmlFor="create-changelist-name">
+                Changelist name
+              </label>
+              <Input
+                id="create-changelist-name"
+                placeholder="UI polish"
+                value={createChangelistName}
+                onChange={(event) => {
+                  setCreateChangelistName(event.target.value);
+                  if (createChangelistError) setCreateChangelistError(null);
+                }}
+              />
+            </div>
+            {createChangelistError && (
+              <div className="dialog-error">{createChangelistError}</div>
+            )}
+          </div>
+          <DialogFooter>
+            <DialogClose asChild>
+              <button className="button secondary">Cancel</button>
+            </DialogClose>
+            <button className="button" onClick={confirmCreateChangelist}>
+              Create changelist
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!renameChangelistTarget}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRenameChangelistTarget(null);
+            setRenameChangelistName("");
+            setRenameChangelistError(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Rename Changelist</DialogTitle>
+            <DialogDescription>
+              Update the name for {renameChangelistTarget?.name ?? "this changelist"}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="dialog-form">
+            <div className="dialog-field">
+              <label className="dialog-label" htmlFor="rename-changelist-name">
+                New name
+              </label>
+              <Input
+                id="rename-changelist-name"
+                value={renameChangelistName}
+                onChange={(event) => {
+                  setRenameChangelistName(event.target.value);
+                  if (renameChangelistError) setRenameChangelistError(null);
+                }}
+              />
+            </div>
+            {renameChangelistError && (
+              <div className="dialog-error">{renameChangelistError}</div>
+            )}
+          </div>
+          <DialogFooter>
+            <DialogClose asChild>
+              <button className="button secondary">Cancel</button>
+            </DialogClose>
+            <button className="button" onClick={confirmRenameChangelist}>
+              Rename
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog
+        open={removeWorktreeOpen}
+        onOpenChange={(open) => {
+          if (!open) setRemoveWorktreeOpen(false);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove Worktree</AlertDialogTitle>
+            <AlertDialogDescription>
+              Remove worktree at {repo?.worktree_path}? This will prune it from the list.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel asChild>
+              <button className="button secondary" disabled={worktreeBusy}>
+                Cancel
+              </button>
+            </AlertDialogCancel>
+            <AlertDialogAction asChild>
+              <button className="button" onClick={confirmRemoveWorktree} disabled={worktreeBusy}>
+                Remove
+              </button>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={!!deleteChangelistTarget}
+        onOpenChange={(open) => {
+          if (!open) setDeleteChangelistTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Changelist</AlertDialogTitle>
+            <AlertDialogDescription>
+              Delete changelist "{deleteChangelistTarget?.name}"? This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel asChild>
+              <button className="button secondary">Cancel</button>
+            </AlertDialogCancel>
+            <AlertDialogAction asChild>
+              <button className="button" onClick={confirmDeleteChangelist}>
+                Delete
+              </button>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <div className="ide-topbar">
+        <div className="repo-controls">
+          <button className="button" onClick={handlePick}>
+            {repo ? "Open Another" : "Open Repo"}
+          </button>
+          <Select
+            value={repo?.path ?? ""}
+            onValueChange={handleSelectRecent}
+            disabled={recent.length === 0}
+          >
+            <SelectTrigger className="select-trigger">
+              <SelectValue className="select-value" placeholder="Recent repositories" />
+            </SelectTrigger>
+            <SelectContent>
+              {recent.map((item) => (
+                <SelectItem key={item.repo_id} value={item.path} textValue={item.name}>
+                  {item.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <div className="repo-meta">
+            <div className="repo-title">{repo?.name ?? "No repository selected"}</div>
+            <div className="repo-path">
+              {repo?.path ?? "Open a repository to start working."}
+            </div>
+          </div>
+        </div>
+        <div className="top-actions">
+          <button className="button secondary" onClick={handleRefresh} disabled={!repo}>
+            Refresh
+          </button>
+          <button
+            className="button secondary"
+            onClick={handleCreateBranch}
+            disabled={!repo || branchBusy}
+          >
+            New Branch
+          </button>
+          <button
+            className="button secondary"
+            onClick={handleFetch}
+            disabled={!repo || branchBusy}
+          >
+            Fetch
+          </button>
+          <button
+            className="button secondary"
+            onClick={handleAddWorktree}
+            disabled={!repo || worktreeBusy}
+          >
+            New Worktree
+          </button>
+          <button
+            className="button secondary"
+            onClick={handlePruneWorktrees}
+            disabled={!repo || worktreeBusy}
+          >
+            Prune
+          </button>
+          <button
+            className="button secondary"
+            onClick={handleRemoveWorktree}
+            disabled={!repo || worktreeBusy}
+          >
+            Remove
+          </button>
+          {(branchBusy || worktreeBusy) && <span className="muted">Working…</span>}
+        </div>
       </div>
 
-      {repo && (
-        <div className="repo-shell">
-          <div className="row">
-            <label className="muted" htmlFor="worktree-select">
-              Worktree
-            </label>
-            <select
-              id="worktree-select"
-              className="branch-select"
-              value={repo.worktree_path}
-              disabled={worktreeBusy || worktrees.length === 0}
-              onChange={(event) => handleSelectWorktree(event.target.value)}
-            >
-              {worktrees.length === 0 && (
-                <option value={repo.worktree_path}>{repo.worktree_path}</option>
-              )}
-              {worktrees.map((wt) => (
-                <option key={wt.path} value={wt.path}>
-                  {wt.path} ({wt.branch})
-                </option>
-              ))}
-            </select>
-            <button className="button secondary" onClick={handleAddWorktree} disabled={worktreeBusy}>
-              New Worktree…
-            </button>
-            <button
-              className="button secondary"
-              onClick={handleRemoveWorktree}
-              disabled={worktreeBusy}
-            >
-              Remove
-            </button>
-            <button
-              className="button secondary"
-              onClick={handlePruneWorktrees}
-              disabled={worktreeBusy}
-            >
-              Prune
-            </button>
-            {worktreeBusy && <span className="muted">Working…</span>}
-          </div>
-          <div className="row">
-            <button className="button secondary" onClick={handleRefresh}>
-              Refresh Summary
-            </button>
-            <span className="muted">Watching: {polling ? "on" : "off"}</span>
-          </div>
-          <div className="row">
-            <label className="muted" htmlFor="branch-select">
-              Branch
-            </label>
-            <select
-              id="branch-select"
-              className="branch-select"
-              value={branchValue}
-              disabled={!branches || branchBusy}
-              onChange={(event) => {
-                const value = event.target.value;
-                if (!value) return;
-                const [type, name] = value.split("::");
-                if (type && name) {
-                  handleCheckout(type as "local" | "remote", name);
-                }
-              }}
-            >
-              <option value="" disabled>
-                {branches ? branches.current : "Loading branches..."}
-              </option>
-              {branches?.locals.map((name) => (
-                <option key={`local-${name}`} value={`local::${name}`}>
-                  {name}
-                </option>
-              ))}
-              {branches?.remotes.map((name) => (
-                <option key={`remote-${name}`} value={`remote::${name}`}>
-                  {name}
-                </option>
-              ))}
-            </select>
-            <button className="button secondary" onClick={handleCreateBranch} disabled={branchBusy}>
-              New Branch…
-            </button>
-            <button className="button secondary" onClick={handleFetch} disabled={branchBusy}>
-              Fetch
-            </button>
-            {branchBusy && <span className="muted">Working…</span>}
-          </div>
-
-          <div className="status-grid">
-            <div className="status-card">
-              <strong>Branch</strong>
-              <div>{status?.head.branch_name ?? "—"}</div>
-            </div>
-            <div className="status-card">
-              <strong>Head</strong>
-              <div>{status?.head.oid_short ?? "—"}</div>
-            </div>
-            <div className="status-card">
-              <strong>Staged</strong>
-              <div>{status?.counts.staged ?? 0}</div>
-            </div>
-            <div className="status-card">
-              <strong>Unstaged</strong>
-              <div>{status?.counts.unstaged ?? 0}</div>
-            </div>
-            <div className="status-card">
-              <strong>Untracked</strong>
-              <div>{status?.counts.untracked ?? 0}</div>
-            </div>
-            <div className="status-card">
-              <strong>Conflicts</strong>
-              <div>{status?.counts.conflicted ?? 0}</div>
-            </div>
-          </div>
-
+      <div className="ide-content">
+        {repo ? (
           <div className="status-layout">
             <aside className="changelist-panel">
               <div className="changelist-header">
@@ -1033,17 +1436,21 @@ export default function RepositoryPicker() {
                         {file.changelist_partial && (
                           <span className="partial-pill">Partial</span>
                         )}
-                        <select
-                          className="move-select"
+                        <Select
                           value={file.changelist_id ?? "default"}
-                          onChange={(event) => handleMoveFile(file, event.target.value)}
+                          onValueChange={(value) => handleMoveFile(file, value)}
                         >
-                          {changelistItems.map((list) => (
-                            <option key={`move-${list.id}`} value={list.id}>
-                              {list.name}
-                            </option>
-                          ))}
-                        </select>
+                          <SelectTrigger className="select-trigger compact">
+                            <SelectValue className="select-value" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {changelistItems.map((list) => (
+                              <SelectItem key={`move-${list.id}`} value={list.id}>
+                                {list.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                         <div className="status-actions">
                           {file.status === "staged" || file.status === "both" ? (
                             <button className="chip" onClick={() => handleUnstage(file)}>
@@ -1137,13 +1544,13 @@ export default function RepositoryPicker() {
                   {!diffLoading && !diffParseError && parsedDiff.length === 0 && (
                     <div className="muted">No diff to display.</div>
                   )}
-                    {parsedDiff.map((file) => (
-                      <Diff
-                        key={file.oldPath}
-                        viewType="split"
-                        diffType={file.type}
-                        hunks={file.hunks}
-                      >
+                  {parsedDiff.map((file) => (
+                    <Diff
+                      key={file.oldPath}
+                      viewType="split"
+                      diffType={file.type}
+                      hunks={file.hunks}
+                    >
                       {(hunks) =>
                         hunks.map((hunk) => {
                           const hunkId = hunkIdByHeader.get(hunk.content.trim());
@@ -1169,21 +1576,105 @@ export default function RepositoryPicker() {
               </div>
             </div>
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="empty-state">
+            <h2>Open a repository</h2>
+            <p className="muted">Select a repository to get started.</p>
+            <button className="button" onClick={handlePick}>
+              Open Repo
+            </button>
+            {recent.length > 0 && (
+              <div className="empty-recent">
+                <strong>Recent repositories</strong>
+                <ul className="recent-list">
+                  {recent.map((item) => (
+                    <li key={item.repo_id}>
+                      <button
+                        className="recent-item"
+                        onClick={() => handleSelectRecent(item.path)}
+                      >
+                        <span className="recent-name">{item.name}</span>
+                        <span className="recent-path">{item.path}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
-      {recent.length > 0 && (
-        <div style={{ marginTop: 16 }}>
-          <strong>Recent Repositories</strong>
-          <ul>
-            {recent.map((item) => (
-              <li key={item.repo_id} className="muted">
-                {item.name} — {item.path}
-              </li>
-            ))}
-          </ul>
+      <div className="ide-statusbar">
+        <div className="status-left">
+          <div className="status-select">
+            <span className="status-label">Worktree</span>
+            <Select
+              value={repo?.worktree_path ?? ""}
+              onValueChange={handleSelectWorktree}
+              disabled={!repo || worktreeBusy || worktrees.length === 0}
+            >
+              <SelectTrigger className="select-trigger tiny">
+                <SelectValue className="select-value" placeholder="Worktree" />
+              </SelectTrigger>
+              <SelectContent>
+                {worktrees.length === 0 && (
+                  <SelectItem value={repo?.worktree_path ?? "none"} disabled>
+                    {repo?.worktree_path ?? "No worktrees"}
+                  </SelectItem>
+                )}
+                {worktrees.map((wt) => (
+                  <SelectItem key={wt.path} value={wt.path}>
+                    {wt.path} ({wt.branch})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="status-select">
+            <span className="status-label">Branch</span>
+            <Select
+              value={branchValue}
+              disabled={!branches || branchBusy}
+              onValueChange={(value) => {
+                if (!value) return;
+                const [type, name] = value.split("::");
+                if (type && name) {
+                  handleCheckout(type as "local" | "remote", name);
+                }
+              }}
+            >
+              <SelectTrigger className="select-trigger tiny">
+                <SelectValue
+                  className="select-value"
+                  placeholder={branches ? branches.current : "No branches"}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {branches?.locals.map((name) => (
+                  <SelectItem key={`local-${name}`} value={`local::${name}`}>
+                    {name}
+                  </SelectItem>
+                ))}
+                {branches?.remotes.map((name) => (
+                  <SelectItem key={`remote-${name}`} value={`remote::${name}`}>
+                    {name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <span className="status-pill">Watching {polling ? "on" : "off"}</span>
+          <span className="status-pill">Head {status?.head.oid_short ?? "—"}</span>
         </div>
-      )}
-    </section>
+        <div className="status-right">
+          <span className="status-pill">Staged {status?.counts.staged ?? 0}</span>
+          <span className="status-pill">Unstaged {status?.counts.unstaged ?? 0}</span>
+          <span className="status-pill">Untracked {status?.counts.untracked ?? 0}</span>
+          <span className="status-pill">Conflicts {status?.counts.conflicted ?? 0}</span>
+        </div>
+      </div>
+    </div>
+  </div>
   );
 }
