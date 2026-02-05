@@ -82,6 +82,38 @@
   --diff-code-delete-edit-background-color: #f1bdbd;
 }
 
+[data-theme="paper"] {
+  color-scheme: light;
+  --bg: repeating-linear-gradient(
+      135deg,
+      rgba(120, 90, 60, 0.04) 0 1px,
+      rgba(255, 255, 255, 0.02) 1px 3px
+    ),
+    linear-gradient(180deg, #f7f2ea 0%, #f2ede4 55%, #ece6dd 100%);
+  --panel: #fbf7f0;
+  --panel-alt: #f3eee6;
+  --panel-strong: #e7e1d8;
+  --text: #2f2a25;
+  --muted: #7a6f66;
+  --border: #d8d0c6;
+  --accent: #5a5147;
+  --accent-contrast: #f7f2ea;
+  --chip: #efe9e1;
+  --sidebar: #f0ebe3;
+  --statusbar: #eae4db;
+  --code-bg: #221f1c;
+  --code-text: #f2eee7;
+  --shadow: 0 12px 28px rgba(26, 22, 18, 0.12);
+  --diff-background-color: var(--panel);
+  --diff-text-color: var(--text);
+  --diff-gutter-insert-background-color: #e4ddd3;
+  --diff-gutter-delete-background-color: #e7ded7;
+  --diff-code-insert-background-color: #efe9e1;
+  --diff-code-delete-background-color: #f1e9e2;
+  --diff-code-insert-edit-background-color: #ddd6cc;
+  --diff-code-delete-edit-background-color: #e3dad3;
+}
+
 * {
   box-sizing: border-box;
 }

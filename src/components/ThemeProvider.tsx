@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 
-type Theme = 'light' | 'dark' | 'solarized-light';
+type Theme = 'light' | 'dark' | 'solarized-light' | 'paper';
 
 interface ThemeContextType {
     theme: Theme;
@@ -14,7 +14,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     const [theme, setTheme] = useState<Theme>(() => {
         // Check local storage or system preference
         const saved = localStorage.getItem('fast-git-theme') as Theme;
-        if (saved === 'light' || saved === 'dark' || saved === 'solarized-light') return saved;
+        if (saved === 'light' || saved === 'dark' || saved === 'solarized-light' || saved === 'paper') {
+            return saved;
+        }
         return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     });
 
@@ -27,6 +29,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
         setTheme((prev) => {
             if (prev === 'light') return 'dark';
             if (prev === 'dark') return 'solarized-light';
+            if (prev === 'solarized-light') return 'paper';
             return 'light';
         });
     };

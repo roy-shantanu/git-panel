@@ -1061,6 +1061,14 @@ export default function RepositoryPicker() {
               >
                 Solarized light
               </DropdownMenuCheckboxItem>
+              <DropdownMenuCheckboxItem
+                checked={theme === "paper"}
+                onCheckedChange={(checked) => {
+                  if (checked) setTheme("paper");
+                }}
+              >
+                Paper
+              </DropdownMenuCheckboxItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
