@@ -18,6 +18,7 @@ export function Header({
     onChangeRepo
 }: HeaderProps) {
     const { theme, toggleTheme } = useTheme();
+    const nextTheme = theme === 'light' ? 'dark' : theme === 'dark' ? 'solarized-light' : 'light';
     return (
         <div className="app-header-bar">
             <div className="breadcrumb">
@@ -66,9 +67,9 @@ export function Header({
             <button
                 className="button secondary"
                 onClick={toggleTheme}
-                title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+                title={`Switch to ${nextTheme} theme`}
             >
-                {theme === 'light' ? '🌙' : '☀️'}
+                {theme === 'light' ? '🌙' : theme === 'dark' ? '☀️' : '🌤️'}
             </button>
         </div>
     );

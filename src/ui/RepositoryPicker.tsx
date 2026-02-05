@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { Diff, Hunk, parseDiff } from "react-diff-view";
@@ -47,6 +47,7 @@ import {
   clList,
   clRename,
   clSetActive,
+  clUnassignFiles,
   clUnassignHunks,
   commitExecute,
   commitPrepare,
@@ -59,9 +60,7 @@ import {
   repoListRecent,
   repoOpen,
   repoOpenWorktree,
-  repoStage,
   repoStatus,
-  repoUnstage,
   wtAdd,
   wtList,
   wtPrune,
@@ -84,9 +83,17 @@ const isTauri =
   typeof window !== "undefined" &&
   ("__TAURI__" in window || "__TAURI_INTERNALS__" in window);
 
+const splitPath = (path: string) => {
+  const normalized = path.replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  const name = parts.pop() ?? normalized;
+  const dir = parts.join("/");
+  return { name, dir };
+};
+
 export default function RepositoryPicker() {
   const { repo, status, recent, setRepo, setStatus, setRecent } = useAppStore();
-  const { theme, toggleTheme } = useTheme();
+  const { theme, setTheme } = useTheme();
   const [polling, setPolling] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<StatusFile | null>(null);
@@ -98,19 +105,23 @@ export default function RepositoryPicker() {
   const [selectedHunkIds, setSelectedHunkIds] = useState<Set<string>>(new Set());
   const [hunkBusy, setHunkBusy] = useState(false);
   const [hunkSelectionEnabled, setHunkSelectionEnabled] = useState(true);
-  const [fileScrollTop, setFileScrollTop] = useState(0);
-  const fileListRef = useRef<HTMLDivElement | null>(null);
   const [branches, setBranches] = useState<BranchList | null>(null);
   const [branchBusy, setBranchBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [changelists, setChangelists] = useState<ChangelistState | null>(null);
   const [selectedChangelistId, setSelectedChangelistId] = useState<string>("default");
+  const [collapsedChangelists, setCollapsedChangelists] = useState<Set<string>>(
+    new Set()
+  );
+  const [changelistNavCollapsed, setChangelistNavCollapsed] = useState(false);
   const [commitMessage, setCommitMessage] = useState("");
   const [commitPreview, setCommitPreview] = useState<CommitPreview | null>(null);
   const [commitError, setCommitError] = useState<string | null>(null);
   const [commitBusy, setCommitBusy] = useState(false);
   const [commitLoading, setCommitLoading] = useState(false);
   const [commitAmend, setCommitAmend] = useState(false);
+  const [commitDialogOpen, setCommitDialogOpen] = useState(false);
+  const [commitSelection, setCommitSelection] = useState<Set<string>>(new Set());
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
   const [infoDialog, setInfoDialog] = useState<{
@@ -136,6 +147,22 @@ export default function RepositoryPicker() {
     useState<Changelist | null>(null);
 
   const files = status?.files ?? [];
+  const filesByChangelist = useMemo(() => {
+    const map = new Map<string, StatusFile[]>();
+    for (const file of files) {
+      const key = file.changelist_id ?? "default";
+      const list = map.get(key);
+      if (list) {
+        list.push(file);
+      } else {
+        map.set(key, [file]);
+      }
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => a.path.localeCompare(b.path));
+    }
+    return map;
+  }, [files]);
 
   const changelistCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -324,6 +351,16 @@ export default function RepositoryPicker() {
       cancelled = true;
     };
   }, [repo?.repo_id, selectedChangelistId, status]);
+
+  useEffect(() => {
+    if (!commitPreview) {
+      setCommitSelection(new Set());
+      return;
+    }
+    if (!commitDialogOpen) {
+      setCommitSelection(new Set(commitPreview.files.map((file) => file.path)));
+    }
+  }, [commitPreview, commitDialogOpen]);
 
   const activeHunkAssignment = useMemo(() => {
     if (!selectedPath) return null;
@@ -676,45 +713,85 @@ export default function RepositoryPicker() {
     }
   };
 
-  const handleMoveFile = async (file: StatusFile, id: string) => {
-    if (!repo) return;
-    try {
-      await clAssignFiles(repo.repo_id, id, [file.path]);
-      await refreshChangelists();
-      const next = await repoStatus(repo.repo_id);
-      setStatus(next);
-    } catch (error) {
-      console.error("cl_assign failed", error);
-      setToast("Move to changelist failed.");
-    }
-  };
-
   const handleCommit = async () => {
     if (!repo) return;
     if (!commitMessage.trim()) {
       setCommitError("Commit message is required.");
       return;
     }
+    if (!commitPreview) {
+      setCommitError("No files to commit.");
+      return;
+    }
+
+    const selectedPaths = commitPreview.files
+      .filter((file) => commitSelection.has(file.path))
+      .map((file) => file.path);
+    if (selectedPaths.length === 0) {
+      setCommitError("Select at least one file to commit.");
+      return;
+    }
+
+    const excludedPaths = commitPreview.files
+      .filter((file) => !commitSelection.has(file.path))
+      .map((file) => file.path);
+    let tempChangelist: Changelist | null = null;
+
+    const restoreExcluded = async () => {
+      if (excludedPaths.length === 0) return;
+      try {
+        const nextStatus = await repoStatus(repo.repo_id);
+        const remaining = excludedPaths.filter((path) =>
+          nextStatus.files.some((file) => file.path === path)
+        );
+        if (remaining.length > 0) {
+          const targetId = selectedChangelistId === "default" ? "default" : selectedChangelistId;
+          await clAssignFiles(repo.repo_id, targetId, remaining);
+        }
+        setStatus(nextStatus);
+      } catch (error) {
+        console.error("restore excluded files failed", error);
+      }
+      if (tempChangelist) {
+        try {
+          await clDelete(repo.repo_id, tempChangelist.id);
+        } catch (error) {
+          console.error("delete temp changelist failed", error);
+        }
+      }
+    };
 
     setCommitBusy(true);
     setCommitError(null);
     try {
+      if (excludedPaths.length > 0) {
+        if (selectedChangelistId === "default") {
+          const tempName = `Skipped files ${Date.now()}`;
+          tempChangelist = await clCreate(repo.repo_id, tempName);
+          await clAssignFiles(repo.repo_id, tempChangelist.id, excludedPaths);
+        } else {
+          await clUnassignFiles(repo.repo_id, excludedPaths);
+        }
+      }
       await commitExecute(repo.repo_id, selectedChangelistId, commitMessage.trim(), {
         amend: commitAmend
       });
+      await restoreExcluded();
       setCommitMessage("");
       setCommitPreview(null);
       setCommitError(null);
       setCommitAmend(false);
+      setCommitDialogOpen(false);
       await handleRefresh();
-      setToast("Changelist committed.");
+      setToast("Commit successful.");
     } catch (error) {
       const message =
         typeof error === "string"
           ? error
           : (error as Error)?.message ?? "Commit failed.";
       setCommitError(message);
-      setToast("Commit failed. See details in the commit panel.");
+      setToast("Commit failed.");
+      await restoreExcluded();
     } finally {
       setCommitBusy(false);
     }
@@ -788,30 +865,34 @@ export default function RepositoryPicker() {
     }
   };
 
+  const toggleChangelistCollapse = (id: string) => {
+    setCollapsedChangelists((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleCommitSelection = (path: string) => {
+    setCommitSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  };
+
   const handleSelectFile = (file: StatusFile, kind: RepoDiffKind) => {
     setSelectedFile(file);
     setSelectedPath(file.path);
     setDiffKind(kind);
-  };
-
-  const handleStage = async (file: StatusFile) => {
-    if (!repo) return;
-    try {
-      await repoStage(repo.repo_id, file.path);
-      await handleRefresh();
-    } catch (error) {
-      console.error("repo_stage failed", error);
-    }
-  };
-
-  const handleUnstage = async (file: StatusFile) => {
-    if (!repo) return;
-    try {
-      await repoUnstage(repo.repo_id, file.path);
-      await handleRefresh();
-    } catch (error) {
-      console.error("repo_unstage failed", error);
-    }
   };
 
   const branchValue = branches?.current ? `local::${branches.current}` : "";
@@ -824,25 +905,6 @@ export default function RepositoryPicker() {
       setSelectedChangelistId("default");
     }
   }, [changelists, changelistItems, selectedChangelistId]);
-
-  const filteredFiles = files.filter((file) => {
-    if (selectedChangelistId === "default") {
-      return !file.changelist_id || file.changelist_id === "default";
-    }
-    return file.changelist_id === selectedChangelistId;
-  });
-
-  const fileRowHeight = 46;
-  const fileListHeight = 320;
-  const fileStart = Math.max(0, Math.floor(fileScrollTop / fileRowHeight) - 4);
-  const fileEnd = Math.min(
-    filteredFiles.length,
-    fileStart + Math.ceil(fileListHeight / fileRowHeight) + 12
-  );
-  const visibleFiles = filteredFiles.slice(fileStart, fileEnd);
-  const fileTopPadding = fileStart * fileRowHeight;
-  const fileBottomPadding =
-    Math.max(0, filteredFiles.length - fileEnd) * fileRowHeight;
 
   const { parsedDiff, diffParseError } = useMemo(() => {
     if (!diffText) return { parsedDiff: [], diffParseError: null };
@@ -880,21 +942,40 @@ export default function RepositoryPicker() {
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button className="nav-icon" aria-label="Settings">
-                SET
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    fill="currentColor"
+                    d="M12 8.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8Zm9.2 3.4c0-.5-.1-1-.2-1.4l2-1.6-1.9-3.3-2.4.9a7.8 7.8 0 0 0-2.4-1.4L14.9 2H9.1L8.7 5.2c-.8.3-1.6.7-2.4 1.4l-2.4-.9-1.9 3.3 2 1.6c-.1.5-.2 1-.2 1.4 0 .5.1 1 .2 1.4l-2 1.6 1.9 3.3 2.4-.9c.8.7 1.6 1.1 2.4 1.4l.4 3.2h5.8l.4-3.2c.8-.3 1.6-.7 2.4-1.4l2.4.9 1.9-3.3-2-1.6c.1-.5.2-1 .2-1.4Z"
+                  />
+                </svg>
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" side="right">
-              <DropdownMenuLabel>Settings</DropdownMenuLabel>
+              <DropdownMenuLabel>Theme</DropdownMenuLabel>
               <DropdownMenuSeparator />
+              <DropdownMenuCheckboxItem
+                checked={theme === "light"}
+                onCheckedChange={(checked) => {
+                  if (checked) setTheme("light");
+                }}
+              >
+                Light
+              </DropdownMenuCheckboxItem>
               <DropdownMenuCheckboxItem
                 checked={theme === "dark"}
                 onCheckedChange={(checked) => {
-                  if ((checked === true) !== (theme === "dark")) {
-                    toggleTheme();
-                  }
+                  if (checked) setTheme("dark");
                 }}
               >
-                Dark theme
+                Dark
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuCheckboxItem
+                checked={theme === "solarized-light"}
+                onCheckedChange={(checked) => {
+                  if (checked) setTheme("solarized-light");
+                }}
+              >
+                Solarized light
               </DropdownMenuCheckboxItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -1125,6 +1206,112 @@ export default function RepositoryPicker() {
         </DialogContent>
       </Dialog>
 
+      <Dialog
+        open={commitDialogOpen}
+        onOpenChange={(open) => {
+          setCommitDialogOpen(open);
+          if (!open) {
+            setCommitError(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Commit staged files</DialogTitle>
+            <DialogDescription>
+              {changelistItems.find((item) => item.id === selectedChangelistId)?.name ??
+                "Changelist"}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="commit-dialog">
+            <div className="dialog-field">
+              <label className="dialog-label" htmlFor="commit-message">
+                Commit message
+              </label>
+              <textarea
+                id="commit-message"
+                className="commit-input"
+                placeholder="Commit message"
+                value={commitMessage}
+                onChange={(event) => setCommitMessage(event.target.value)}
+                rows={3}
+              />
+            </div>
+            <label className="commit-checkbox">
+              <input
+                type="checkbox"
+                checked={commitAmend}
+                onChange={(event) => setCommitAmend(event.target.checked)}
+              />
+              Amend previous commit
+            </label>
+            {commitError && <div className="commit-error">{commitError}</div>}
+            {commitPreview && commitPreview.invalid_hunks.length > 0 && (
+              <div className="commit-error">Some hunks need reselect before committing.</div>
+            )}
+            {commitPreview && commitPreview.warnings.length > 0 && (
+              <ul className="commit-warnings">
+                {commitPreview.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            )}
+            <div className="commit-dialog-list">
+              {commitLoading ? (
+                <div className="muted">Previewing…</div>
+              ) : commitPreview ? (
+                commitPreview.files.length === 0 ? (
+                  <div className="muted">No files to commit.</div>
+                ) : (
+                  <div className="commit-file-list">
+                    {commitPreview.files.map((file) => {
+                      const { name, dir } = splitPath(file.path);
+                      return (
+                        <label key={file.path} className="commit-file-row">
+                          <input
+                            type="checkbox"
+                            checked={commitSelection.has(file.path)}
+                            onChange={() => toggleCommitSelection(file.path)}
+                          />
+                          <span className="commit-file-text">
+                            <span className="file-name">{name}</span>
+                            {dir && <span className="file-dir">{dir}</span>}
+                          </span>
+                          <span className="commit-file-status">{file.status}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )
+              ) : (
+                <div className="muted">No preview available.</div>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <DialogClose asChild>
+              <button className="button secondary" disabled={commitBusy}>
+                Cancel
+              </button>
+            </DialogClose>
+            <button
+              className="button"
+              onClick={handleCommit}
+              disabled={
+                commitBusy ||
+                commitLoading ||
+                !commitPreview ||
+                !commitMessage.trim() ||
+                commitSelection.size === 0 ||
+                (commitPreview?.invalid_hunks.length ?? 0) > 0
+              }
+            >
+              {commitBusy ? "Committing…" : "Commit"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <AlertDialog
         open={removeWorktreeOpen}
         onOpenChange={(open) => {
@@ -1251,44 +1438,110 @@ export default function RepositoryPicker() {
 
       <div className="ide-content">
         {repo ? (
-          <div className="status-layout">
-            <aside className="changelist-panel">
+          <div
+            className={`status-layout ${changelistNavCollapsed ? "collapsed" : ""}`}
+          >
+            <aside
+              className={`changelist-panel ${changelistNavCollapsed ? "collapsed" : ""}`}
+            >
               <div className="changelist-header">
-                <h3>Changelists</h3>
-                <div className="changelist-header-actions">
-                  <button className="chip" onClick={handleRefresh} disabled={!repo}>
-                    Refresh
+                <div className="changelist-title">
+                  <button
+                    className={`panel-toggle ${changelistNavCollapsed ? "" : "open"}`}
+                    onClick={() => setChangelistNavCollapsed((prev) => !prev)}
+                    aria-label={
+                      changelistNavCollapsed ? "Expand changelist panel" : "Collapse changelist panel"
+                    }
+                  >
+                    ▶
                   </button>
-                  <button className="chip" onClick={handleCreateChangelist}>
-                    New
-                  </button>
+                  <h3>Changelists</h3>
                 </div>
+                {!changelistNavCollapsed && (
+                  <div className="changelist-header-actions">
+                    <button className="chip" onClick={handleRefresh} disabled={!repo}>
+                      Refresh
+                    </button>
+                    <button className="chip" onClick={handleCreateChangelist}>
+                      New
+                    </button>
+                  </div>
+                )}
               </div>
-              <ul className="changelist-list">
+              {!changelistNavCollapsed && (
+                <div className="changelist-body">
+                  <div className="changelist-staged">
+                    <div className="staged-meta">
+                      <div className="staged-title">Staged list</div>
+                      <div className="staged-name">
+                        {changelistItems.find((item) => item.id === selectedChangelistId)
+                          ?.name ?? "Changelist"}
+                      </div>
+                      <div className="staged-count">
+                        {commitLoading ? "Previewing…" : `${commitPreview?.files.length ?? 0} files`}
+                      </div>
+                    </div>
+                    <button
+                      className="button"
+                      onClick={() => {
+                        if (commitPreview) {
+                          setCommitSelection(
+                            new Set(commitPreview.files.map((file) => file.path))
+                          );
+                        }
+                        setCommitDialogOpen(true);
+                        setCommitError(null);
+                      }}
+                      disabled={
+                        commitBusy ||
+                        commitLoading ||
+                        (commitPreview?.files.length ?? 0) === 0 ||
+                        (commitPreview?.invalid_hunks.length ?? 0) > 0
+                      }
+                    >
+                      {commitBusy ? "Committing…" : "Commit"}
+                    </button>
+                  </div>
+                  <div className="changelist-scroll">
+                    <ul className="changelist-list">
                 {changelistItems.map((list) => {
                   const count = changelistCounts.get(list.id) ?? 0;
                   const isActive = list.id === activeChangelistId;
+                  const listFiles = filesByChangelist.get(list.id) ?? [];
+                  const isCollapsed = collapsedChangelists.has(list.id);
                   return (
                     <li key={list.id} className="changelist-item">
-                      <button
-                        className={`changelist-link ${
-                          selectedChangelistId === list.id ? "active" : ""
-                        }`}
-                        onClick={() => setSelectedChangelistId(list.id)}
-                      >
-                        {list.name}
-                      </button>
-                      <span className="count-pill">{count}</span>
-                      {isActive ? (
-                        <span className="active-pill">Active</span>
-                      ) : (
+                      <div className="changelist-row">
                         <button
-                          className="chip"
-                          onClick={() => handleSetActiveChangelist(list.id)}
+                          className={`collapse-toggle ${isCollapsed ? "" : "open"}`}
+                          onClick={() => toggleChangelistCollapse(list.id)}
+                          aria-label={
+                            isCollapsed ? "Expand changelist" : "Collapse changelist"
+                          }
+                          aria-expanded={!isCollapsed}
                         >
-                          Set Active
+                          ▶
                         </button>
-                      )}
+                        <button
+                          className={`changelist-link ${
+                            selectedChangelistId === list.id ? "active" : ""
+                          }`}
+                          onClick={() => setSelectedChangelistId(list.id)}
+                        >
+                          {list.name}
+                        </button>
+                        <span className="count-pill">{count}</span>
+                        {isActive ? (
+                          <span className="active-pill">Active</span>
+                        ) : (
+                          <button
+                            className="chip"
+                            onClick={() => handleSetActiveChangelist(list.id)}
+                          >
+                            Set Active
+                          </button>
+                        )}
+                      </div>
                       {list.id !== "default" && (
                         <div className="changelist-actions">
                           <button
@@ -1305,171 +1558,50 @@ export default function RepositoryPicker() {
                           </button>
                         </div>
                       )}
+                      {!isCollapsed && (
+                        <ul className="changelist-files">
+                          {listFiles.length === 0 ? (
+                            <li className="changelist-file empty">No files</li>
+                          ) : (
+                            listFiles.map((file) => {
+                              const { name, dir } = splitPath(file.path);
+                              return (
+                                <li
+                                  key={`${list.id}-${file.path}`}
+                                  className={`changelist-file ${
+                                    selectedFile?.path === file.path ? "active" : ""
+                                  }`}
+                                >
+                                  <button
+                                    className="changelist-file-link"
+                                    title={file.path}
+                                    onClick={() => {
+                                      setSelectedChangelistId(list.id);
+                                      handleSelectFile(
+                                        file,
+                                        file.status === "staged" ? "staged" : "unstaged"
+                                      );
+                                    }}
+                                  >
+                                    <span className="file-name">{name}</span>
+                                    {dir && <span className="file-dir">{dir}</span>}
+                                  </button>
+                                </li>
+                              );
+                            })
+                          )}
+                        </ul>
+                      )}
                     </li>
                   );
                 })}
-              </ul>
-            </aside>
-
-            <div className="file-panel">
-              <div className="file-header">
-                <h3>
-                  {changelistItems.find((item) => item.id === selectedChangelistId)?.name ??
-                    "Files"}
-                </h3>
-                <span className="muted">
-                  {filteredFiles.length} file{filteredFiles.length === 1 ? "" : "s"}
-                </span>
-              </div>
-
-              <div className="commit-panel">
-                <div className="commit-header">
-                  <div>
-                    <strong>Commit Changelist</strong>
-                    <div className="muted">
-                      {changelistItems.find((item) => item.id === selectedChangelistId)?.name ??
-                        "Selected"}
-                    </div>
-                  </div>
-                  <div className="commit-meta">
-                    {commitLoading ? (
-                      <span className="muted">Previewing…</span>
-                    ) : commitPreview ? (
-                      <span className="muted">
-                        {commitPreview.files.length} file
-                        {commitPreview.files.length === 1 ? "" : "s"}
-                      </span>
-                    ) : (
-                      <span className="muted">No preview</span>
-                    )}
-                  </div>
-                </div>
-
-                <textarea
-                  className="commit-input"
-                  placeholder="Commit message"
-                  value={commitMessage}
-                  onChange={(event) => setCommitMessage(event.target.value)}
-                  rows={3}
-                />
-                <label className="commit-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={commitAmend}
-                    onChange={(event) => setCommitAmend(event.target.checked)}
-                  />
-                  Amend previous commit
-                </label>
-
-                {commitError && <div className="commit-error">{commitError}</div>}
-
-                {commitPreview && (
-                  <div className="commit-preview">
-                    <div className="commit-stats">
-                      <span className="count-pill">Staged {commitPreview.stats.staged}</span>
-                      <span className="count-pill">Unstaged {commitPreview.stats.unstaged}</span>
-                      <span className="count-pill">Untracked {commitPreview.stats.untracked}</span>
-                    </div>
-                    {commitPreview.invalid_hunks.length > 0 && (
-                      <div className="commit-error">
-                        Some hunks need reselect before committing.
-                      </div>
-                    )}
-                    {commitPreview.warnings.length > 0 && (
-                      <ul className="commit-warnings">
-                        {commitPreview.warnings.map((warning) => (
-                          <li key={warning}>{warning}</li>
-                        ))}
-                      </ul>
-                    )}
-                    <ul className="commit-file-list">
-                      {commitPreview.files.map((file) => (
-                        <li key={`commit-${file.path}`}>
-                          {file.path} <span className="muted">({file.status})</span>
-                        </li>
-                      ))}
                     </ul>
-                  </div>
-                )}
-
-                <button
-                  className="button"
-                  onClick={handleCommit}
-                  disabled={
-                    commitBusy ||
-                    !!commitError ||
-                    !commitPreview ||
-                    !commitMessage.trim() ||
-                    commitPreview.invalid_hunks.length > 0
-                  }
-                >
-                  {commitBusy ? "Committing…" : "Commit changelist"}
-                </button>
-              </div>
-
-              {filteredFiles.length === 0 ? (
-                <p className="muted">No files in this changelist.</p>
-              ) : (
-                <div
-                  ref={fileListRef}
-                  className="file-list-virtual"
-                  style={{ height: fileListHeight }}
-                  onScroll={(event) =>
-                    setFileScrollTop((event.target as HTMLDivElement).scrollTop)
-                  }
-                >
-                  <div style={{ paddingTop: fileTopPadding, paddingBottom: fileBottomPadding }}>
-                    {visibleFiles.map((file) => (
-                      <div key={file.path} className="file-row">
-                        <button
-                          className="file-link"
-                          onClick={() =>
-                            handleSelectFile(
-                              file,
-                              file.status === "staged" ? "staged" : "unstaged"
-                            )
-                          }
-                        >
-                          {file.path}
-                        </button>
-                        <span className="status-pill">{file.status}</span>
-                        {file.changelist_partial && (
-                          <span className="partial-pill">Partial</span>
-                        )}
-                        <Select
-                          value={file.changelist_id ?? "default"}
-                          onValueChange={(value) => handleMoveFile(file, value)}
-                        >
-                          <SelectTrigger className="select-trigger compact">
-                            <SelectValue className="select-value" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {changelistItems.map((list) => (
-                              <SelectItem key={`move-${list.id}`} value={list.id}>
-                                {list.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <div className="status-actions">
-                          {file.status === "staged" || file.status === "both" ? (
-                            <button className="chip" onClick={() => handleUnstage(file)}>
-                              Unstage
-                            </button>
-                          ) : (
-                            file.status !== "conflicted" && (
-                              <button className="chip" onClick={() => handleStage(file)}>
-                                Stage
-                              </button>
-                            )
-                          )}
-                        </div>
-                      </div>
-                    ))}
                   </div>
                 </div>
               )}
+            </aside>
 
+            <div className="file-panel">
               <div className="diff-panel">
                 <div className="diff-header">
                   <div>
@@ -1604,8 +1736,9 @@ export default function RepositoryPicker() {
           </div>
         )}
       </div>
+    </div>
 
-      <div className="ide-statusbar">
+    <div className="ide-statusbar">
         <div className="status-left">
           <div className="status-select">
             <span className="status-label">Worktree</span>
@@ -1673,7 +1806,6 @@ export default function RepositoryPicker() {
           <span className="status-pill">Untracked {status?.counts.untracked ?? 0}</span>
           <span className="status-pill">Conflicts {status?.counts.conflicted ?? 0}</span>
         </div>
-      </div>
     </div>
   </div>
   );

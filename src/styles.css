@@ -54,6 +54,33 @@
   --diff-code-delete-edit-background-color: #6a2b36;
 }
 
+[data-theme="solarized-light"] {
+  color-scheme: light;
+  --bg: radial-gradient(circle at top, #fdf6e3 0%, #f5ebcf 55%, #eee2b8 100%);
+  --panel: #fff9ea;
+  --panel-alt: #f7edd1;
+  --panel-strong: #efe1bf;
+  --text: #586e75;
+  --muted: #839496;
+  --border: #e1d4ad;
+  --accent: #268bd2;
+  --accent-contrast: #fdf6e3;
+  --chip: #f3e7c7;
+  --sidebar: #f2e6c6;
+  --statusbar: #efe2c1;
+  --code-bg: #073642;
+  --code-text: #fdf6e3;
+  --shadow: 0 14px 30px rgba(88, 110, 117, 0.18);
+  --diff-background-color: var(--panel);
+  --diff-text-color: var(--text);
+  --diff-gutter-insert-background-color: #d4efdf;
+  --diff-gutter-delete-background-color: #f7d7d7;
+  --diff-code-insert-background-color: #e4f6ec;
+  --diff-code-delete-background-color: #fce8e8;
+  --diff-code-insert-edit-background-color: #bfe7d2;
+  --diff-code-delete-edit-background-color: #f1bdbd;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -90,13 +117,18 @@ body {
 }
 
 .ide-shell {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 100vh;
   width: 100%;
 }
 
 .ide-sidebar {
+  grid-column: 1;
+  grid-row: 1 / 3;
   width: 56px;
+  height: 100%;
   background: var(--sidebar);
   border-right: 1px solid var(--border);
   display: flex;
@@ -104,6 +136,9 @@ body {
   justify-content: space-between;
   padding: 14px 8px;
   gap: 16px;
+  position: sticky;
+  top: 0;
+  z-index: 20;
 }
 
 .nav-section {
@@ -131,6 +166,12 @@ body {
   font-family: inherit;
 }
 
+.nav-icon svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
 .nav-icon.active {
   background: var(--accent);
   color: var(--accent-contrast);
@@ -147,6 +188,9 @@ body {
   display: flex;
   flex-direction: column;
   position: relative;
+  grid-column: 2;
+  grid-row: 1 / 3;
+  min-height: 0;
 }
 
 .ide-topbar {
@@ -158,6 +202,9 @@ body {
   padding: 12px 18px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
+  position: sticky;
+  top: 0;
+  z-index: 15;
 }
 
 .repo-controls {
@@ -200,9 +247,14 @@ body {
   flex: 1;
   padding: 16px 18px 12px;
   overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .ide-statusbar {
+  grid-column: 1 / -1;
+  grid-row: 3;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -212,6 +264,9 @@ body {
   background: var(--statusbar);
   font-size: 12px;
   flex-wrap: wrap;
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
 }
 
 .status-left,
@@ -361,9 +416,15 @@ body {
 
 .status-layout {
   display: grid;
-  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
+  min-height: 0;
+  flex: 1;
+}
+
+.status-layout.collapsed {
+  grid-template-columns: 52px minmax(0, 1fr);
 }
 
 .chip {
@@ -394,6 +455,9 @@ body {
   padding: 12px;
   background: var(--panel);
   min-height: 280px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
 }
 
 .diff-header {
@@ -437,6 +501,8 @@ body {
   padding: 8px;
   overflow: auto;
   margin-top: 12px;
+  flex: 1;
+  min-height: 0;
 }
 
 .diff-hunk-row {
@@ -501,9 +567,20 @@ body {
 
 .changelist-panel {
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px;
+  border-radius: 10px;
+  padding: 10px;
   background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 10px;
+  height: 100%;
+  overflow: hidden;
+}
+
+.changelist-panel.collapsed {
+  align-items: center;
+  padding: 10px 6px;
 }
 
 .changelist-header {
@@ -511,6 +588,97 @@ body {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 10px;
+}
+
+.changelist-panel.collapsed .changelist-header {
+  margin-bottom: 0;
+}
+
+.changelist-panel.collapsed .changelist-header h3 {
+  display: none;
+}
+
+.changelist-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.changelist-panel.collapsed .changelist-title {
+  justify-content: center;
+}
+
+.panel-toggle {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-alt);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transform: rotate(0deg);
+  transition: transform 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.panel-toggle.open {
+  transform: rotate(180deg);
+}
+
+.panel-toggle:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.changelist-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.changelist-staged {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--panel-alt);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.staged-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.staged-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.staged-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.staged-count {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.changelist-scroll {
+  overflow: auto;
+  min-height: 0;
+  flex: 1;
 }
 
 .changelist-header h3 {
@@ -529,17 +697,48 @@ body {
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
 }
 
 .changelist-item {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel-alt);
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+}
+
+.changelist-item:last-child {
+  border-bottom: none;
+}
+
+.changelist-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.collapse-toggle {
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transform: rotate(0deg);
+  transition: transform 0.15s ease;
+}
+
+.collapse-toggle.open {
+  transform: rotate(90deg);
 }
 
 .changelist-link {
@@ -555,6 +754,46 @@ body {
 .changelist-link.active {
   font-weight: 600;
   color: var(--accent);
+}
+
+.changelist-files {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.changelist-file {
+  display: flex;
+  align-items: center;
+}
+
+.changelist-file.empty {
+  color: var(--muted);
+  font-size: 12px;
+  padding-left: 8px;
+}
+
+.changelist-file-link {
+  border: none;
+  background: transparent;
+  padding: 2px 4px;
+  text-align: left;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  width: 100%;
+}
+
+.changelist-file.active .changelist-file-link {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .changelist-actions {
@@ -588,6 +827,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 0;
 }
 
 .commit-panel {
@@ -595,6 +835,12 @@ body {
   border-radius: 8px;
   padding: 12px;
   background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.commit-dialog {
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -672,6 +918,44 @@ body {
   flex-direction: column;
   gap: 4px;
   font-size: 13px;
+}
+
+.commit-dialog-list {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--panel-alt);
+  max-height: 260px;
+  overflow: auto;
+}
+
+.commit-file-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.commit-file-text {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.commit-file-row:hover {
+  background: var(--panel-strong);
+}
+
+.commit-file-status {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
 }
 
 .file-header {
@@ -996,6 +1280,27 @@ body {
   font: inherit;
   color: var(--text);
   cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+.file-name {
+  white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-dir {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .status-actions {
@@ -1027,6 +1332,10 @@ body {
 
 @media (max-width: 900px) {
   .status-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .status-layout.collapsed {
     grid-template-columns: 1fr;
   }
 
