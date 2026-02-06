@@ -22,6 +22,7 @@ fn main() {
             api::repo_open_worktree,
             api::repo_status,
             api::repo_diff,
+            api::repo_diff_payload,
             api::repo_diff_hunks,
             api::wt_list,
             api::wt_add,

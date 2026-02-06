@@ -100,6 +100,11 @@ export interface UnifiedDiffText {
   text: string;
 }
 
+export interface RepoDiffPayload {
+  text: string;
+  hunks: DiffHunk[];
+}
+
 export interface DiffHunk {
   path: string;
   kind: RepoDiffKind;

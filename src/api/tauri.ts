@@ -14,6 +14,7 @@ import type {
   CheckoutTarget,
   FetchResult,
   RepoListItem,
+  RepoDiffPayload,
   RepoDiffKind,
   RepoStatus,
   RepoStatusRequest,
@@ -54,6 +55,14 @@ export async function repoDiffHunks(
   kind: RepoDiffKind
 ): Promise<DiffHunk[]> {
   return invoke("repo_diff_hunks", { req: { repo_id, path, kind } });
+}
+
+export async function repoDiffPayload(
+  repo_id: string,
+  path: string,
+  kind: RepoDiffKind
+): Promise<RepoDiffPayload> {
+  return invoke("repo_diff_payload", { req: { repo_id, path, kind } });
 }
 
 export async function repoStage(repo_id: string, path: string): Promise<void> {

@@ -10,7 +10,7 @@ use crate::model::{
     Changelist, ChangelistAssignHunksRequest, ChangelistAssignRequest, ChangelistCreateRequest,
     ChangelistIdRequest, ChangelistRenameRequest, ChangelistState, ChangelistUnassignHunksRequest,
     ChangelistUnassignRequest, CommitExecuteRequest, CommitPreview, CommitPrepareRequest,
-    CommitResult, DiffHunk, HunkAssignment, RepoOpenWorktreeRequest, RepoPathRequest,
+    CommitResult, DiffHunk, HunkAssignment, RepoDiffPayload, RepoOpenWorktreeRequest, RepoPathRequest,
     RepoStatusRequest, RepoSummary, UnifiedDiffText, WorktreeAddRequest, WorktreeList,
     WorktreePathRequest, WorktreeResult,
 };
@@ -198,21 +198,50 @@ pub async fn repo_diff_hunks(
     if let Some(key) = cache_key.as_ref() {
         if let Ok(guard) = state.lock() {
             if let Some(cached) = guard.get_diff_cache(key) {
-                return Ok(git::diff_hunks_from_text(
+                let all_hunks = git::diff_hunks_from_text(
                     &cached.text,
                     &path,
                     kind.clone(),
-                ));
+                );
+                let filtered = filter_hunks_for_path(all_hunks.clone(), &path);
+                return Ok(if filtered.is_empty() { all_hunks } else { filtered });
             }
         }
     }
 
     let diff = repo_diff(req, state).await?;
-    Ok(git::diff_hunks_from_text(
+    let all_hunks = git::diff_hunks_from_text(
         &diff.text,
         &path,
         kind,
-    ))
+    );
+    let filtered = filter_hunks_for_path(all_hunks.clone(), &path);
+    Ok(if filtered.is_empty() { all_hunks } else { filtered })
+}
+
+#[tauri::command]
+pub async fn repo_diff_payload(
+    req: RepoDiffRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<RepoDiffPayload, String> {
+    let started = Instant::now();
+    let path = req.path.clone();
+    let kind = req.kind.clone();
+    let diff = repo_diff(req, state).await?;
+    let all_hunks = git::diff_hunks_from_text(&diff.text, &path, kind);
+    let filtered = filter_hunks_for_path(all_hunks.clone(), &path);
+    let hunks = if filtered.is_empty() { all_hunks } else { filtered };
+    tracing::info!(
+        path = %path,
+        hunks = hunks.len(),
+        text_len = diff.text.len(),
+        duration_ms = started.elapsed().as_millis(),
+        "repo_diff_payload"
+    );
+    Ok(RepoDiffPayload {
+        text: diff.text,
+        hunks,
+    })
 }
 
 #[tauri::command]
@@ -708,6 +737,18 @@ fn collect_hunk_files(
         result.push((path, assignment.hunks));
     }
     Ok(result)
+}
+
+fn filter_hunks_for_path(hunks: Vec<DiffHunk>, path: &str) -> Vec<DiffHunk> {
+    let normalized = normalize_repo_path(path);
+    hunks
+        .into_iter()
+        .filter(|hunk| normalize_repo_path(&hunk.path) == normalized)
+        .collect()
+}
+
+fn normalize_repo_path(path: &str) -> String {
+    path.replace('\\', "/").trim_start_matches("./").to_string()
 }
 
 #[cfg(test)]

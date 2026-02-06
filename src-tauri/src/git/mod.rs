@@ -446,8 +446,11 @@ pub fn diff_for_path(
     kind: RepoDiffKind,
 ) -> Result<UnifiedDiffText, String> {
     let repo = Repository::open(&summary.path).map_err(|e| e.to_string())?;
+    let normalized_path = normalize_repo_path(path);
     let mut options = DiffOptions::new();
-    options.pathspec(path);
+    options
+        .pathspec(&normalized_path)
+        .disable_pathspec_match(true);
 
     let diff = match kind {
         RepoDiffKind::Unstaged => {
@@ -470,7 +473,32 @@ pub fn diff_for_path(
     let mut text = String::new();
     diff.print(DiffFormat::Patch, |_, _, line| {
         if let Ok(chunk) = std::str::from_utf8(line.content()) {
-            text.push_str(chunk);
+            let origin = line.origin();
+            match origin {
+                // Normalize unified hunk line prefixes so downstream parsers
+                // always receive standard patch rows (+/-/ context).
+                '+' | '-' | ' ' | '\\' => {
+                    if !chunk.starts_with(origin) {
+                        text.push(origin);
+                    }
+                    text.push_str(chunk);
+                }
+                // libgit2 uses '\n' for some empty context rows; map them to
+                // a valid unified-diff context line.
+                '\n' => {
+                    if chunk == "\n" || chunk.is_empty() {
+                        text.push_str(" \n");
+                    } else {
+                        if !chunk.starts_with(' ') {
+                            text.push(' ');
+                        }
+                        text.push_str(chunk);
+                    }
+                }
+                _ => {
+                    text.push_str(chunk);
+                }
+            }
         }
         true
     })
@@ -821,7 +849,7 @@ fn parse_diff_hunks(diff_text: &str, default_path: &str, kind: RepoDiffKind) -> 
             let file_header_text = file_header.join("\n");
             let path = current_path
                 .clone()
-                .unwrap_or_else(|| default_path.to_string());
+                .unwrap_or_else(|| normalize_repo_path(default_path));
             hunks.push(DiffHunk {
                 path,
                 kind: kind.clone(),
@@ -861,35 +889,107 @@ pub fn diff_cache_key(
     path: &str,
     kind: RepoDiffKind,
 ) -> Result<String, String> {
+    const DIFF_CACHE_VERSION: &str = "v2";
+    let normalized_path = normalize_repo_path(path);
     let old_oid = match kind {
-        RepoDiffKind::Staged => run_git(&summary.path, &["rev-parse", &format!("HEAD:{path}")], None)
+        RepoDiffKind::Staged => run_git(
+            &summary.path,
+            &["rev-parse", &format!("HEAD:{normalized_path}")],
+            None,
+        )
             .ok(),
         RepoDiffKind::Unstaged => {
-            run_git(&summary.path, &["rev-parse", &format!(":{path}")], None).ok()
+            run_git(
+                &summary.path,
+                &["rev-parse", &format!(":{normalized_path}")],
+                None,
+            )
+            .ok()
         }
     };
 
     let new_oid = match kind {
-        RepoDiffKind::Staged => run_git(&summary.path, &["rev-parse", &format!(":{path}")], None)
-            .ok(),
-        RepoDiffKind::Unstaged => run_git(&summary.path, &["hash-object", path], None).ok(),
+        RepoDiffKind::Staged => run_git(
+            &summary.path,
+            &["rev-parse", &format!(":{normalized_path}")],
+            None,
+        )
+        .ok(),
+        RepoDiffKind::Unstaged => run_git(&summary.path, &["hash-object", &normalized_path], None).ok(),
     };
 
     let old_oid = old_oid.map(|value| value.trim().to_string()).unwrap_or_else(|| "none".to_string());
     let new_oid = new_oid.map(|value| value.trim().to_string()).unwrap_or_else(|| "none".to_string());
     Ok(format!(
-        "{}:{}:{}:{}",
-        summary.repo_id, path, old_oid, new_oid
+        "{}:{}:{}:{}:{}",
+        DIFF_CACHE_VERSION, summary.repo_id, normalized_path, old_oid, new_oid
     ))
 }
 
+fn normalize_repo_path(path: &str) -> String {
+    path.replace('\\', "/").trim_start_matches("./").to_string()
+}
+
 fn extract_b_path(line: &str) -> Option<String> {
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() >= 4 {
-        let b = parts[3];
-        return Some(b.trim_start_matches("b/").to_string());
+    let tokens = parse_diff_header_tokens(line);
+    if tokens.len() >= 2 {
+        let b = tokens[1].trim_start_matches("b/");
+        return Some(normalize_repo_path(b));
     }
     None
+}
+
+fn parse_diff_header_tokens(line: &str) -> Vec<String> {
+    let Some(rest) = line.strip_prefix("diff --git ") else {
+        return Vec::new();
+    };
+
+    let mut tokens = Vec::new();
+    let mut chars = rest.chars().peekable();
+
+    while let Some(ch) = chars.peek() {
+        if ch.is_whitespace() {
+            chars.next();
+            continue;
+        }
+
+        if *ch == '"' {
+            chars.next();
+            let mut token = String::new();
+            let mut escaped = false;
+            while let Some(c) = chars.next() {
+                if escaped {
+                    token.push(c);
+                    escaped = false;
+                    continue;
+                }
+                if c == '\\' {
+                    escaped = true;
+                    continue;
+                }
+                if c == '"' {
+                    break;
+                }
+                token.push(c);
+            }
+            tokens.push(token);
+            continue;
+        }
+
+        let mut token = String::new();
+        while let Some(c) = chars.peek() {
+            if c.is_whitespace() {
+                break;
+            }
+            token.push(*c);
+            chars.next();
+        }
+        if !token.is_empty() {
+            tokens.push(token);
+        }
+    }
+
+    tokens
 }
 
 fn parse_hunk_header(line: &str) -> (u32, u32, u32, u32) {

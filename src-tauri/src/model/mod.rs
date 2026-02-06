@@ -185,6 +185,12 @@ pub struct UnifiedDiffText {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoDiffPayload {
+    pub text: String,
+    pub hunks: Vec<DiffHunk>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffHunk {
     pub path: String,
     pub kind: RepoDiffKind,

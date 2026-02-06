@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { DiffFile, DiffModeEnum, DiffView, SplitSide } from "@git-diff-view/react";
@@ -54,8 +54,7 @@ import {
   repoBranches,
   repoCheckout,
   repoCreateBranch,
-  repoDiff,
-  repoDiffHunks,
+  repoDiffPayload,
   repoFetch,
   repoListRecent,
   repoOpen,
@@ -131,15 +130,50 @@ type HunkExtendData = {
   newFile: Record<string, { data: HunkToggleItem[] }>;
 };
 
-const NO_NEWLINE_MARKER = "\\ No newline at end of file";
+type DiffWorkerRequest = {
+  requestId: number;
+  filePath: string;
+  patchText: string;
+  fallbackPatch?: string;
+  theme: "light" | "dark";
+};
+
+type DiffWorkerSuccess = {
+  type: "success";
+  requestId: number;
+  durationMs: number;
+  data: {
+    oldFile?: { fileName?: string | null; fileLang?: string | null; content?: string | null };
+    newFile?: { fileName?: string | null; fileLang?: string | null; content?: string | null };
+    hunks: string[];
+  };
+  bundle: ReturnType<DiffFile["getBundle"]>;
+};
+
+type DiffWorkerError = {
+  type: "error";
+  requestId: number;
+  durationMs: number;
+  error: string;
+};
+
+type DiffWorkerResponse = DiffWorkerSuccess | DiffWorkerError;
 
 const sanitizePatchText = (text: string) =>
   text
+    .replace(/^\uFEFF/, "")
     .replace(/\r\n/g, "\n")
-    .split("\n")
-    .filter((line) => line !== NO_NEWLINE_MARKER)
-    .join("\n")
-    .trim();
+    .replace(/\r/g, "")
+    .split("\0")
+    .join("");
+
+const isBinaryPatchText = (text: string) => {
+  if (!text) return false;
+  return (
+    /(^|\n)Binary files .* differ(?:\n|$)/.test(text) ||
+    /(^|\n)GIT binary patch(?:\n|$)/.test(text)
+  );
+};
 
 const buildPatchFromHunks = (filePath: string, hunks: DiffHunk[]) => {
   if (hunks.length === 0) return "";
@@ -150,13 +184,17 @@ const buildPatchFromHunks = (filePath: string, hunks: DiffHunk[]) => {
   const lines: string[] = [];
   let lastHeader = "";
   for (const hunk of hunks) {
+    const content = hunk.content ? sanitizePatchText(hunk.content) : "";
+    if (!content.trim()) {
+      continue;
+    }
     const header = sanitizePatchText(hunk.file_header);
     if (header && header !== lastHeader) {
       lines.push(header);
       lastHeader = header;
     }
     lines.push(hunk.header);
-    if (hunk.content) lines.push(sanitizePatchText(hunk.content));
+    lines.push(content);
   }
 
   const body = lines.filter(Boolean).join("\n");
@@ -217,14 +255,6 @@ const buildHunkExtendData = (diffFile: DiffFile, hunks: DiffHunk[]): HunkExtendD
   return extendData;
 };
 
-const createDiffFile = (filePath: string, patchText: string, theme: string) => {
-  const nextDiffFile = new DiffFile(filePath, "", filePath, "", [patchText], "", "");
-  nextDiffFile.initTheme(theme === "dark" ? "dark" : "light");
-  nextDiffFile.initRaw();
-  nextDiffFile.buildSplitDiffLines();
-  return nextDiffFile;
-};
-
 type DiffPanelProps = {
   diffLoading: boolean;
   diffParseError: string | null;
@@ -232,8 +262,9 @@ type DiffPanelProps = {
   theme: string;
   hunkSelectionEnabled: boolean;
   hunkExtendData: HunkExtendData | undefined;
-  selectedHunkIds: Set<string>;
-  onToggleHunk: (id: string) => void;
+  selectionEpoch: number;
+  initialSelectedHunkIds: Set<string>;
+  onToggleHunk: (id: string, checked: boolean) => void;
 };
 
 const DiffPanel = memo(function DiffPanel({
@@ -243,7 +274,8 @@ const DiffPanel = memo(function DiffPanel({
   theme,
   hunkSelectionEnabled,
   hunkExtendData,
-  selectedHunkIds,
+  selectionEpoch,
+  initialSelectedHunkIds,
   onToggleHunk
 }: DiffPanelProps) {
   const renderHunkExtendLine = useCallback(
@@ -253,11 +285,14 @@ const DiffPanel = memo(function DiffPanel({
       return (
         <div className="hunk-extend-list">
           {data.map((entry) => (
-            <label key={entry.id} className="hunk-toggle hunk-toggle-inline">
+            <label
+              key={`${entry.id}:${selectionEpoch}`}
+              className="hunk-toggle hunk-toggle-inline"
+            >
               <input
                 type="checkbox"
-                checked={selectedHunkIds.has(entry.id)}
-                onChange={() => onToggleHunk(entry.id)}
+                defaultChecked={initialSelectedHunkIds.has(entry.id)}
+                onChange={(event) => onToggleHunk(entry.id, event.currentTarget.checked)}
               />
               <span className="hunk-toggle-label">{entry.label}</span>
             </label>
@@ -265,7 +300,7 @@ const DiffPanel = memo(function DiffPanel({
         </div>
       );
     },
-    [hunkSelectionEnabled, onToggleHunk, selectedHunkIds]
+    [hunkSelectionEnabled, initialSelectedHunkIds, onToggleHunk, selectionEpoch]
   );
 
   return (
@@ -299,11 +334,17 @@ export default function RepositoryPicker() {
   const [diffKind, setDiffKind] = useState<RepoDiffKind>("unstaged");
   const [diffText, setDiffText] = useState("");
   const [diffLoading, setDiffLoading] = useState(false);
+  const [diffParsing, setDiffParsing] = useState(false);
+  const [diffFile, setDiffFile] = useState<DiffFile | null>(null);
+  const [diffParseError, setDiffParseError] = useState<string | null>(null);
   const [diffHunks, setDiffHunks] = useState<DiffHunk[]>([]);
   const [diffHunkError, setDiffHunkError] = useState<string | null>(null);
   const [selectedHunkIds, setSelectedHunkIds] = useState<Set<string>>(new Set());
+  const [hunkSelectionEpoch, setHunkSelectionEpoch] = useState(0);
   const [hunkBusy, setHunkBusy] = useState(false);
   const [hunkSelectionEnabled, setHunkSelectionEnabled] = useState(true);
+  const diffWorkerRef = useRef<Worker | null>(null);
+  const diffWorkerRequestIdRef = useRef(0);
   const [branches, setBranches] = useState<BranchList | null>(null);
   const [branchBusy, setBranchBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -393,6 +434,13 @@ export default function RepositoryPicker() {
     setSelectedFile(null);
     setSelectedPath(null);
     setDiffText("");
+    setDiffFile(null);
+    setDiffParseError(null);
+    setDiffParsing(false);
+    setDiffHunks([]);
+    setDiffHunkError(null);
+    setSelectedHunkIds(new Set());
+    setHunkSelectionEpoch((prev) => prev + 1);
     setDiffKind("unstaged");
     setSelectedChangelistId("default");
     setHunkSelectionEnabled(true);
@@ -462,17 +510,86 @@ export default function RepositoryPicker() {
   }, [repo?.repo_root]);
 
   useEffect(() => {
-    if (!repo?.repo_id || !selectedPath) return;
+    const worker = new Worker(new URL("../workers/diffWorker.ts", import.meta.url), {
+      type: "module"
+    });
+    diffWorkerRef.current = worker;
+
+    const onMessage = (event: MessageEvent<DiffWorkerResponse>) => {
+      const message = event.data;
+      if (message.requestId !== diffWorkerRequestIdRef.current) return;
+      setDiffParsing(false);
+
+      if (message.type === "success") {
+        try {
+          const nextDiffFile = DiffFile.createInstance(message.data, message.bundle);
+          setDiffFile(nextDiffFile);
+          setDiffParseError(null);
+          console.log("diff worker parsed", { durationMs: message.durationMs });
+        } catch (error) {
+          console.error("diff bundle hydrate failed", error);
+          setDiffFile(null);
+          setDiffParseError("Diff parse hydrate failed.");
+        }
+        return;
+      }
+
+      console.error("diff worker parse failed", message.error);
+      setDiffFile(null);
+      setDiffParseError(message.error || "Diff could not be parsed.");
+    };
+
+    worker.addEventListener("message", onMessage);
+    return () => {
+      worker.removeEventListener("message", onMessage);
+      worker.terminate();
+      diffWorkerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!repo?.repo_id || !selectedPath) {
+      setDiffText("");
+      setDiffHunks([]);
+      setDiffFile(null);
+      setDiffParseError(null);
+      setDiffParsing(false);
+      setSelectedHunkIds(new Set());
+      setHunkSelectionEpoch((prev) => prev + 1);
+      setDiffHunkError(null);
+      return;
+    }
 
     let cancelled = false;
+    const startedAt = performance.now();
     setDiffLoading(true);
-    repoDiff(repo.repo_id, selectedPath, diffKind)
+    setDiffHunkError(null);
+    setDiffParseError(null);
+    repoDiffPayload(repo.repo_id, selectedPath, diffKind)
       .then((result) => {
-        if (!cancelled) setDiffText(result.text);
+        if (cancelled) return;
+        setDiffText(result.text);
+        setDiffHunks(result.hunks);
+        console.log("repo_diff_payload loaded", {
+          path: selectedPath,
+          kind: diffKind,
+          textLength: result.text.length,
+          hunkCount: result.hunks.length,
+          durationMs: Math.round(performance.now() - startedAt)
+        });
       })
       .catch((error) => {
-        console.error("repo_diff failed", error);
-        if (!cancelled) setDiffText("");
+        if (cancelled) return;
+        console.error("repo_diff_payload failed", error);
+        setDiffText("");
+        setDiffHunks([]);
+        setDiffFile(null);
+        setDiffParseError(null);
+        const message =
+          typeof error === "string"
+            ? error
+            : (error as Error)?.message ?? "Diff load failed.";
+        setDiffHunkError(message);
       })
       .finally(() => {
         if (!cancelled) setDiffLoading(false);
@@ -484,40 +601,65 @@ export default function RepositoryPicker() {
   }, [repo?.repo_id, selectedPath, diffKind]);
 
   useEffect(() => {
-    if (!repo?.repo_id || !selectedPath) {
-      setDiffHunks([]);
-      setSelectedHunkIds(new Set());
-      setDiffHunkError(null);
+    if (!diffText) {
+      setDiffFile(null);
+      setDiffParseError(null);
+      setDiffParsing(false);
       return;
     }
 
-    let cancelled = false;
-    setDiffHunkError(null);
-    repoDiffHunks(repo.repo_id, selectedPath, diffKind)
-      .then((next) => {
-        if (!cancelled) {
-          setDiffHunks(next);
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          const message =
-            typeof error === "string"
-              ? error
-              : (error as Error)?.message ?? "Diff hunks failed.";
-          setDiffHunkError(message);
-          setDiffHunks([]);
-        }
-      });
+    const worker = diffWorkerRef.current;
+    if (!worker) return;
 
-    return () => {
-      cancelled = true;
-    };
-  }, [repo?.repo_id, selectedPath, diffKind]);
+    const filePath = selectedPath ?? selectedFile?.path ?? "";
+    const primaryPatch = sanitizePatchText(diffText);
+    const fallbackPatch = buildPatchFromHunks(filePath, diffHunks);
+    const hasHunkHeader =
+      /(^|\n)@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/.test(primaryPatch);
+
+    if (isBinaryPatchText(diffText)) {
+      setDiffFile(null);
+      setDiffParseError("Binary diff cannot be rendered.");
+      setDiffParsing(false);
+      return;
+    }
+
+    if (!hasHunkHeader && diffHunks.length === 0) {
+      setDiffFile(null);
+      setDiffParsing(false);
+      if (diffKind === "staged") {
+        setDiffParseError(
+          "No staged textual hunks for this file. If content exists, check the Unstaged tab."
+        );
+      } else {
+        setDiffParseError("No textual hunks to render for this change.");
+      }
+      return;
+    }
+
+    if (!primaryPatch) {
+      setDiffFile(null);
+      setDiffParseError(null);
+      setDiffParsing(false);
+      return;
+    }
+
+    const requestId = diffWorkerRequestIdRef.current + 1;
+    diffWorkerRequestIdRef.current = requestId;
+    setDiffParsing(true);
+    worker.postMessage({
+      requestId,
+      filePath,
+      patchText: primaryPatch,
+      fallbackPatch,
+      theme: theme === "dark" ? "dark" : "light"
+    } satisfies DiffWorkerRequest);
+  }, [diffHunks, diffKind, diffText, selectedFile?.path, selectedPath, theme]);
 
   useEffect(() => {
     if (!hunkSelectionEnabled) {
       setSelectedHunkIds(new Set());
+      setHunkSelectionEpoch((prev) => prev + 1);
     }
   }, [hunkSelectionEnabled]);
 
@@ -592,6 +734,7 @@ export default function RepositoryPicker() {
 
   useEffect(() => {
     setSelectedHunkIds(new Set(assignedHunkIds));
+    setHunkSelectionEpoch((prev) => prev + 1);
   }, [assignedHunkIds, diffHunks]);
 
   const handlePick = async () => {
@@ -1003,13 +1146,13 @@ export default function RepositoryPicker() {
     }
   };
 
-  const toggleHunk = useCallback((id: string) => {
+  const toggleHunk = useCallback((id: string, checked: boolean) => {
     setSelectedHunkIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
+      if (checked) {
         next.add(id);
+      } else {
+        next.delete(id);
       }
       return next;
     });
@@ -1156,57 +1299,10 @@ export default function RepositoryPicker() {
     }
   }, [changelists, changelistItems, selectedChangelistId]);
 
-  const { diffFile, diffParseError, hunkExtendData } = useMemo(() => {
-    if (!diffText) {
-      return {
-        diffFile: null as DiffFile | null,
-        diffParseError: null as string | null,
-        hunkExtendData: undefined as HunkExtendData | undefined
-      };
-    }
-
-    const filePath = selectedPath ?? selectedFile?.path ?? "";
-    const primaryPatch = sanitizePatchText(diffText);
-    let fallbackPatch = "";
-
-    try {
-      const nextDiffFile = createDiffFile(filePath, primaryPatch, theme);
-
-      return {
-        diffFile: nextDiffFile,
-        diffParseError: null,
-        hunkExtendData: hunkSelectionEnabled
-          ? buildHunkExtendData(nextDiffFile, diffHunks)
-          : undefined
-      };
-    } catch (error) {
-      console.error("primary diff parse failed", error);
-    }
-
-    fallbackPatch = buildPatchFromHunks(filePath, diffHunks);
-    if (fallbackPatch && fallbackPatch !== primaryPatch) {
-      try {
-        const nextDiffFile = createDiffFile(filePath, fallbackPatch, theme);
-        return {
-          diffFile: nextDiffFile,
-          diffParseError: null,
-          hunkExtendData: hunkSelectionEnabled
-            ? buildHunkExtendData(nextDiffFile, diffHunks)
-            : undefined
-        };
-      } catch (error) {
-        console.error("fallback diff parse failed", error);
-      }
-    }
-
-    return {
-      diffFile: null,
-      diffParseError: /Binary files|GIT binary patch/i.test(diffText)
-        ? "Binary diff cannot be rendered."
-        : "Diff could not be parsed.",
-      hunkExtendData: undefined
-    };
-  }, [diffHunks, diffText, hunkSelectionEnabled, selectedFile?.path, selectedPath, theme]);
+  const hunkExtendData = useMemo(() => {
+    if (!hunkSelectionEnabled || !diffFile) return undefined;
+    return buildHunkExtendData(diffFile, diffHunks);
+  }, [diffFile, diffHunks, hunkSelectionEnabled]);
 
   return (
     <div className="ide-shell">
@@ -2063,13 +2159,14 @@ export default function RepositoryPicker() {
                   </div>
                 )}
                 <DiffPanel
-                  diffLoading={diffLoading}
+                  diffLoading={diffLoading || diffParsing}
                   diffParseError={diffParseError}
                   diffFile={diffFile}
                   theme={theme}
                   hunkSelectionEnabled={hunkSelectionEnabled}
                   hunkExtendData={hunkExtendData}
-                  selectedHunkIds={selectedHunkIds}
+                  selectionEpoch={hunkSelectionEpoch}
+                  initialSelectedHunkIds={assignedHunkIds}
                   onToggleHunk={toggleHunk}
                 />
               </div>
