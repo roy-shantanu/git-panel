@@ -392,6 +392,16 @@ body {
   align-items: center;
 }
 
+.status-select-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.status-select-repo {
+  min-width: 0;
+}
+
 .status-label {
   font-size: 10px;
   text-transform: uppercase;
@@ -406,6 +416,61 @@ body {
   border-radius: 999px;
   font-size: 12px;
   color: var(--text);
+}
+
+.status-repo-pill {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-watcher-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  display: inline-block;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+}
+
+.status-dot.on {
+  background: #25c56a;
+}
+
+.status-dot.off {
+  background: #8e9aa8;
+}
+
+.status-icon-button {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.status-icon-button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.status-icon-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .toast.toast-floating {
@@ -563,6 +628,16 @@ body {
 .chip:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.chip-icon {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
 }
 
 .diff-panel {

@@ -64,7 +64,6 @@ import {
   repoUnstage,
   wtAdd,
   wtList,
-  wtPrune,
   wtRemove
 } from "../api/tauri";
 import { getIconForFilePath, getIconUrlForFilePath } from "vscode-material-icons";
@@ -826,27 +825,6 @@ export default function RepositoryPicker() {
     setWorktreeDialogOpen(true);
   };
 
-  const handleRemoveWorktree = () => {
-    if (!repo) return;
-    setRemoveWorktreeOpen(true);
-  };
-
-  const handlePruneWorktrees = async () => {
-    if (!repo) return;
-    setWorktreeBusy(true);
-    try {
-      await wtPrune(repo.repo_root);
-      const wt = await wtList(repo.repo_root);
-      setWorktrees(wt.worktrees);
-      setToast("Worktrees pruned.");
-    } catch (error) {
-      console.error("wt_prune failed", error);
-      setToast("Prune failed.");
-    } finally {
-      setWorktreeBusy(false);
-    }
-  };
-
   const handleCheckout = async (type: "local" | "remote", name: string) => {
     if (!repo) return;
     setBranchBusy(true);
@@ -1314,6 +1292,9 @@ export default function RepositoryPicker() {
           <button className="nav-icon active" aria-label="Repository">
             RP
           </button>
+          <button className="nav-icon" aria-label="Open another repository" onClick={handlePick}>
+            OR
+          </button>
           <button
             className="nav-icon"
             aria-label="Toggle changelist panel"
@@ -1769,77 +1750,6 @@ export default function RepositoryPicker() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      <div className="ide-topbar">
-        <div className="repo-controls">
-          <button className="button" onClick={handlePick}>
-            {repo ? "Open Another" : "Open Repo"}
-          </button>
-          <Select
-            value={repo?.path ?? ""}
-            onValueChange={handleSelectRecent}
-            disabled={recent.length === 0}
-          >
-            <SelectTrigger className="select-trigger">
-              <SelectValue className="select-value" placeholder="Recent repositories" />
-            </SelectTrigger>
-            <SelectContent>
-              {recent.map((item) => (
-                <SelectItem key={item.repo_id} value={item.path} textValue={item.name}>
-                  {item.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <div className="repo-meta">
-            <div className="repo-title">{repo?.name ?? "No repository selected"}</div>
-            <div className="repo-path">
-              {repo?.path ?? "Open a repository to start working."}
-            </div>
-          </div>
-        </div>
-        <div className="top-actions">
-          <button className="button secondary" onClick={handleRefresh} disabled={!repo}>
-            Refresh
-          </button>
-          <button
-            className="button secondary"
-            onClick={handleCreateBranch}
-            disabled={!repo || branchBusy}
-          >
-            New Branch
-          </button>
-          <button
-            className="button secondary"
-            onClick={handleFetch}
-            disabled={!repo || branchBusy}
-          >
-            Fetch
-          </button>
-          <button
-            className="button secondary"
-            onClick={handleAddWorktree}
-            disabled={!repo || worktreeBusy}
-          >
-            New Worktree
-          </button>
-          <button
-            className="button secondary"
-            onClick={handlePruneWorktrees}
-            disabled={!repo || worktreeBusy}
-          >
-            Prune
-          </button>
-          <button
-            className="button secondary"
-            onClick={handleRemoveWorktree}
-            disabled={!repo || worktreeBusy}
-          >
-            Remove
-          </button>
-          {(branchBusy || worktreeBusy) && <span className="muted">Working…</span>}
-        </div>
-      </div>
-
       <div className="ide-content">
         {repo ? (
           <div
@@ -1863,11 +1773,22 @@ export default function RepositoryPicker() {
                 </div>
                 {!changelistNavCollapsed && (
                   <div className="changelist-header-actions">
-                    <button className="chip" onClick={handleRefresh} disabled={!repo}>
-                      Refresh
+                    <button
+                      className="chip chip-icon"
+                      onClick={handleRefresh}
+                      disabled={!repo}
+                      aria-label="Refresh"
+                      title="Refresh"
+                    >
+                      ↻
                     </button>
-                    <button className="chip" onClick={handleCreateChangelist}>
-                      New
+                    <button
+                      className="chip chip-icon"
+                      onClick={handleCreateChangelist}
+                      aria-label="New changelist"
+                      title="New changelist"
+                    >
+                      +
                     </button>
                   </div>
                 )}
@@ -2218,6 +2139,31 @@ export default function RepositoryPicker() {
 
     <div className="ide-statusbar">
         <div className="status-left">
+          <div className="status-select status-select-repo">
+            <span className="status-label">Repo</span>
+            <Select
+              value={repo?.path ?? ""}
+              onValueChange={handleSelectRecent}
+              disabled={recent.length === 0}
+            >
+              <SelectTrigger className="select-trigger tiny">
+                <SelectValue className="select-value" placeholder="Recent repositories" />
+              </SelectTrigger>
+              <SelectContent>
+                {recent.map((item) => (
+                  <SelectItem key={item.repo_id} value={item.path} textValue={item.name}>
+                    {item.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <span
+              className="status-pill status-repo-pill"
+              title={repo?.path ?? "Open a repository to start working."}
+            >
+              {repo?.name ?? "No repository selected"}
+            </span>
+          </div>
           <div className="status-select">
             <span className="status-label">Worktree</span>
             <Select
@@ -2241,6 +2187,17 @@ export default function RepositoryPicker() {
                 ))}
               </SelectContent>
             </Select>
+            <div className="status-select-actions">
+              <button
+                className="status-icon-button"
+                onClick={handleAddWorktree}
+                disabled={!repo || worktreeBusy}
+                aria-label="Add worktree"
+                title="New worktree"
+              >
+                +
+              </button>
+            </div>
           </div>
           <div className="status-select">
             <span className="status-label">Branch</span>
@@ -2274,15 +2231,37 @@ export default function RepositoryPicker() {
                 ))}
               </SelectContent>
             </Select>
+            <div className="status-select-actions">
+              <button
+                className="status-icon-button"
+                onClick={handleCreateBranch}
+                disabled={!repo || branchBusy}
+                aria-label="Create branch"
+                title="New branch"
+              >
+                +
+              </button>
+              <button
+                className="status-icon-button"
+                onClick={handleFetch}
+                disabled={!repo || branchBusy}
+                aria-label="Fetch from remote"
+                title="Fetch"
+              >
+                ⟳
+              </button>
+            </div>
           </div>
-          <span className="status-pill">Watching {polling ? "on" : "off"}</span>
-          <span className="status-pill">Head {status?.head.oid_short ?? "—"}</span>
         </div>
         <div className="status-right">
-          <span className="status-pill">Staged {status?.counts.staged ?? 0}</span>
-          <span className="status-pill">Unstaged {status?.counts.unstaged ?? 0}</span>
-          <span className="status-pill">Untracked {status?.counts.untracked ?? 0}</span>
-          <span className="status-pill">Conflicts {status?.counts.conflicted ?? 0}</span>
+          <span className="status-pill">Head {status?.head.oid_short ?? "—"}</span>
+          <span className="status-pill status-watcher-pill">
+            Watcher
+            <span
+              className={`status-dot ${polling ? "on" : "off"}`}
+              aria-hidden="true"
+            />
+          </span>
         </div>
     </div>
   </div>
