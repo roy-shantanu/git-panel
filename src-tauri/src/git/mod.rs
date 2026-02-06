@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use git2::{
     build::CheckoutBuilder, BranchType, DiffFormat, DiffOptions, FetchOptions, ObjectType,
     RemoteCallbacks, Repository, Status, StatusOptions,
@@ -224,6 +227,11 @@ fn run_git(
     command.arg("-C").arg(repo_path).args(args);
     if let Some((key, value)) = env {
         command.env(key, value);
+    }
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
     }
     let output = command.output().map_err(|e| e.to_string())?;
     if !output.status.success() {
