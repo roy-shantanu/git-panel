@@ -819,13 +819,21 @@ body {
   position: sticky;
   top: 0;
   align-self: start;
+  min-width: 0;
+  width: 100%;
+  opacity: 1;
+  transform: translateX(0);
+  animation: slideInFromLeft 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .changelist-panel.collapsed {
-  display: none;
-  align-items: center;
+  width: 0;
+  opacity: 0;
+  transform: translateX(-10px);
   padding: 0;
-  border: none;
+  border-right-color: transparent;
+  pointer-events: none;
+  animation: slideOutToLeft 160ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .changelist-header {
@@ -843,44 +851,10 @@ body {
   padding-bottom: 0;
 }
 
-.changelist-panel.collapsed .changelist-header h3 {
-  display: none;
-}
-
 .changelist-title {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.changelist-panel.collapsed .changelist-title {
-  justify-content: center;
-}
-
-.panel-toggle {
-  width: 24px;
-  height: 24px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--panel-alt);
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 12px;
-  line-height: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transform: rotate(0deg);
-  transition: transform 0.2s ease, color 0.2s ease, border-color 0.2s ease;
-}
-
-.panel-toggle.open {
-  transform: rotate(180deg);
-}
-
-.panel-toggle:hover {
-  color: var(--accent);
-  border-color: var(--accent);
 }
 
 .changelist-body {
@@ -1183,8 +1157,26 @@ body {
   grid-column: 2;
 }
 
-.status-layout.collapsed .file-panel {
-  grid-column: 1 / -1;
+@keyframes slideInFromLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideOutToLeft {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
 }
 
 .commit-panel {

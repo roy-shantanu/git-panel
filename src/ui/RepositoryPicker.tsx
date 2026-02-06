@@ -22,6 +22,7 @@ import {
   DialogHeader,
   DialogTitle
 } from "../components/ui/dialog";
+import { Input } from "../components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -30,7 +31,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from "../components/ui/dropdown-menu";
-import { Input } from "../components/ui/input";
 import {
   Select,
   SelectContent,
@@ -1309,32 +1309,29 @@ export default function RepositoryPicker() {
     <div className="ide-shell">
       <aside className="ide-sidebar">
         <div className="nav-section">
-          <button className="nav-icon active" aria-label="Repository">
-            RP
-          </button>
-          <button className="nav-icon" aria-label="Open another repository" onClick={handlePick}>
-            OR
-          </button>
           <button
-            className="nav-icon"
+            className={`nav-icon ${!changelistNavCollapsed ? "active" : ""}`}
             aria-label="Toggle changelist panel"
             aria-pressed={!changelistNavCollapsed}
             onClick={() => setChangelistNavCollapsed((prev) => !prev)}
+            title={changelistNavCollapsed ? "Open changelists" : "Close changelists"}
           >
-            CL
-          </button>
-          <button className="nav-icon" aria-label="Diffs">
-            DF
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M4 5h2v2H4V5Zm4 0h12v2H8V5Zm-4 6h2v2H4v-2Zm4 0h12v2H8v-2Zm-4 6h2v2H4v-2Zm4 0h12v2H8v-2Z"
+              />
+            </svg>
           </button>
         </div>
         <div className="nav-section">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <button className="nav-icon" aria-label="Settings">
+              <button className="nav-icon" aria-label="Settings" title="Settings">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path
                     fill="currentColor"
-                    d="M12 8.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8Zm9.2 3.4c0-.5-.1-1-.2-1.4l2-1.6-1.9-3.3-2.4.9a7.8 7.8 0 0 0-2.4-1.4L14.9 2H9.1L8.7 5.2c-.8.3-1.6.7-2.4 1.4l-2.4-.9-1.9 3.3 2 1.6c-.1.5-.2 1-.2 1.4 0 .5.1 1 .2 1.4l-2 1.6 1.9 3.3 2.4-.9c.8.7 1.6 1.1 2.4 1.4l.4 3.2h5.8l.4-3.2c.8-.3 1.6-.7 2.4-1.4l2.4.9 1.9-3.3-2-1.6c.1-.5.2-1 .2-1.4Z"
+                    d="M3 7h8v2H3V7Zm12-2a2 2 0 1 1 0 4 2 2 0 0 1 0-4Zm6 2v2h-2V7h2ZM3 11h2v2H3v-2Zm6 0h12v2H9v-2Zm-2-2a2 2 0 1 1 0 4 2 2 0 0 1 0-4Zm-4 6h12v2H3v-2Zm16-2a2 2 0 1 1 0 4 2 2 0 0 1 0-4Zm2 2h-2v2h2v-2Z"
                   />
                 </svg>
               </button>
@@ -1780,15 +1777,6 @@ export default function RepositoryPicker() {
             >
               <div className="changelist-header">
                 <div className="changelist-title">
-                  <button
-                    className={`panel-toggle ${changelistNavCollapsed ? "" : "open"}`}
-                    onClick={() => setChangelistNavCollapsed((prev) => !prev)}
-                    aria-label={
-                      changelistNavCollapsed ? "Expand changelist panel" : "Collapse changelist panel"
-                    }
-                  >
-                    ▶
-                  </button>
                   <h3>Changelists</h3>
                 </div>
                 {!changelistNavCollapsed && (
