@@ -89,6 +89,7 @@ export interface RepoListItem {
   repo_id: RepoId;
   path: string;
   name: string;
+  repo_root: string;
   last_opened: number;
 }
 

@@ -1456,6 +1456,35 @@ body {
   color: var(--text);
 }
 
+.repo-select-item {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.repo-select-open-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.repo-select-open-icon {
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+}
+
+.repo-select-name {
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.repo-select-path {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.2;
+}
+
 .select-item[data-highlighted] {
   background: var(--panel-alt);
 }

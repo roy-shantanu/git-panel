@@ -88,6 +88,7 @@ impl AppState {
                 repo_id: summary.repo_id.clone(),
                 path: summary.path.clone(),
                 name: summary.name.clone(),
+                repo_root: summary.repo_root.clone(),
                 last_opened: now,
             },
         );

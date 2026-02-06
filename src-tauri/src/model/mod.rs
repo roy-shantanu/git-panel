@@ -171,6 +171,7 @@ pub struct RepoListItem {
     pub repo_id: RepoId,
     pub path: String,
     pub name: String,
+    pub repo_root: String,
     pub last_opened: u64,
 }
 
