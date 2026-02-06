@@ -589,6 +589,18 @@ body {
   gap: 6px;
 }
 
+.diff-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.diff-wrap-toggle {
+  white-space: nowrap;
+}
+
 .hunk-toolbar {
   display: flex;
   gap: 8px;
@@ -615,7 +627,8 @@ body {
   border-radius: 8px;
   background: var(--panel);
   padding: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   margin-top: 12px;
   flex: 1;
   min-height: 0;
@@ -626,7 +639,26 @@ body {
 }
 
 .diff-view .diff-view-wrapper {
-  min-width: max-content;
+  width: 100%;
+  min-width: 100%;
+}
+
+.diff-view .split-diff-view.split-diff-view-normal {
+  width: 100%;
+  min-width: 0;
+  flex-basis: auto;
+}
+
+.diff-view .split-diff-view.split-diff-view-normal .old-diff-table-wrapper,
+.diff-view .split-diff-view.split-diff-view-normal .new-diff-table-wrapper {
+  flex: 0 0 calc((100% - 1.5px) / 2);
+  width: calc((100% - 1.5px) / 2);
+  max-width: calc((100% - 1.5px) / 2);
+  min-width: 0;
+}
+
+.diff-view .split-diff-view.split-diff-view-normal .diff-split-line {
+  flex: 0 0 1.5px;
 }
 
 .diff-view .diff-table-scroll-container {

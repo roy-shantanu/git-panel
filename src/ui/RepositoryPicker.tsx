@@ -260,6 +260,7 @@ type DiffPanelProps = {
   diffParseError: string | null;
   diffFile: DiffFile | null;
   theme: string;
+  diffWrap: boolean;
   hunkSelectionEnabled: boolean;
   hunkExtendData: HunkExtendData | undefined;
   selectionEpoch: number;
@@ -272,6 +273,7 @@ const DiffPanel = memo(function DiffPanel({
   diffParseError,
   diffFile,
   theme,
+  diffWrap,
   hunkSelectionEnabled,
   hunkExtendData,
   selectionEpoch,
@@ -315,7 +317,7 @@ const DiffPanel = memo(function DiffPanel({
           diffFile={diffFile}
           diffViewMode={DiffModeEnum.Split}
           diffViewTheme={theme === "dark" ? "dark" : "light"}
-          diffViewWrap={false}
+          diffViewWrap={diffWrap}
           diffViewHighlight={false}
           extendData={hunkSelectionEnabled ? hunkExtendData : undefined}
           renderExtendLine={renderHunkExtendLine}
@@ -335,6 +337,7 @@ export default function RepositoryPicker() {
   const [diffText, setDiffText] = useState("");
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffParsing, setDiffParsing] = useState(false);
+  const [diffWrap, setDiffWrap] = useState(false);
   const [diffFile, setDiffFile] = useState<DiffFile | null>(null);
   const [diffParseError, setDiffParseError] = useState<string | null>(null);
   const [diffHunks, setDiffHunks] = useState<DiffHunk[]>([]);
@@ -2100,24 +2103,34 @@ export default function RepositoryPicker() {
                       {selectedFile ? selectedFile.path : "Select a file to view diff"}
                     </div>
                   </div>
-                  {selectedFile && selectedFile.status !== "untracked" && (
-                    <div className="diff-tabs">
-                      <button
-                        className={`chip ${diffKind === "unstaged" ? "active" : ""}`}
-                        onClick={() => setDiffKind("unstaged")}
-                        disabled={selectedFile.status === "staged"}
-                      >
-                        Unstaged
-                      </button>
-                      <button
-                        className={`chip ${diffKind === "staged" ? "active" : ""}`}
-                        onClick={() => setDiffKind("staged")}
-                        disabled={selectedFile.status === "unstaged"}
-                      >
-                        Staged
-                      </button>
-                    </div>
-                  )}
+                  <div className="diff-header-actions">
+                    {selectedFile && selectedFile.status !== "untracked" && (
+                      <div className="diff-tabs">
+                        <button
+                          className={`chip ${diffKind === "unstaged" ? "active" : ""}`}
+                          onClick={() => setDiffKind("unstaged")}
+                          disabled={selectedFile.status === "staged"}
+                        >
+                          Unstaged
+                        </button>
+                        <button
+                          className={`chip ${diffKind === "staged" ? "active" : ""}`}
+                          onClick={() => setDiffKind("staged")}
+                          disabled={selectedFile.status === "unstaged"}
+                        >
+                          Staged
+                        </button>
+                      </div>
+                    )}
+                    <label className="commit-checkbox diff-wrap-toggle">
+                      <input
+                        type="checkbox"
+                        checked={diffWrap}
+                        onChange={(event) => setDiffWrap(event.currentTarget.checked)}
+                      />
+                      Wrap lines
+                    </label>
+                  </div>
                 </div>
                 {diffHunkError && <div className="commit-error">{diffHunkError}</div>}
                 {selectedFile && (
@@ -2163,6 +2176,7 @@ export default function RepositoryPicker() {
                   diffParseError={diffParseError}
                   diffFile={diffFile}
                   theme={theme}
+                  diffWrap={diffWrap}
                   hunkSelectionEnabled={hunkSelectionEnabled}
                   hunkExtendData={hunkExtendData}
                   selectionEpoch={hunkSelectionEpoch}
