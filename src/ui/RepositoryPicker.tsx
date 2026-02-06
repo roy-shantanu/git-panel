@@ -35,6 +35,7 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue
 } from "../components/ui/select";
@@ -92,6 +93,14 @@ const splitPath = (path: string) => {
   return { name, dir };
 };
 
+const formatHomeRelativePath = (path: string) => {
+  const normalized = path.replace(/\//g, "\\");
+  const homeMatch = normalized.match(/^[A-Za-z]:\\Users\\[^\\]+/i);
+  if (!homeMatch) return normalized;
+  const suffix = normalized.slice(homeMatch[0].length);
+  return suffix ? `~${suffix}` : "~";
+};
+
 const isStagedStatus = (status: StatusFile["status"]) =>
   status === "staged" || status === "both";
 
@@ -110,6 +119,7 @@ const ICONS_URL = "/material-icons";
 const STAGED_LIST_ID = "staged";
 const EMPTY_FILES: StatusFile[] = [];
 const EMPTY_CHANGELISTS: Changelist[] = [];
+const OPEN_REPO_SELECT_VALUE = "__open_repo__";
 
 const getFileIconInfo = (path: string): FileIconInfo => {
   const iconName = getIconForFilePath(path);
@@ -421,6 +431,16 @@ export default function RepositoryPicker() {
     }
     return counts;
   }, [files]);
+
+  const recentRepoOptions = useMemo(() => {
+    const seen = new Set<string>();
+    return recent.filter((item) => {
+      const key = (item.repo_root || item.path).replace(/\//g, "\\").toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [recent]);
 
   useEffect(() => {
     repoListRecent().then(setRecent).catch(console.error);
@@ -2114,11 +2134,11 @@ export default function RepositoryPicker() {
             <button className="button" onClick={handlePick}>
               Open Repo
             </button>
-            {recent.length > 0 && (
+            {recentRepoOptions.length > 0 && (
               <div className="empty-recent">
                 <strong>Recent repositories</strong>
                 <ul className="recent-list">
-                  {recent.map((item) => (
+                  {recentRepoOptions.map((item) => (
                     <li key={item.repo_id}>
                       <button
                         className="recent-item"
@@ -2143,26 +2163,42 @@ export default function RepositoryPicker() {
             <span className="status-label">Repo</span>
             <Select
               value={repo?.path ?? ""}
-              onValueChange={handleSelectRecent}
-              disabled={recent.length === 0}
+              onValueChange={(value) => {
+                if (value === OPEN_REPO_SELECT_VALUE) {
+                  handlePick();
+                  return;
+                }
+                handleSelectRecent(value);
+              }}
             >
               <SelectTrigger className="select-trigger tiny">
-                <SelectValue className="select-value" placeholder="Recent repositories" />
+                <SelectValue className="select-value" placeholder="Recent repositories">
+                  {repo?.name ?? "No repository selected"}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                {recent.map((item) => (
+                <SelectItem value={OPEN_REPO_SELECT_VALUE} textValue="Open...">
+                  <span className="repo-select-open-item">
+                    <img
+                      className="repo-select-open-icon"
+                      src={`${ICONS_URL}/folder.svg`}
+                      alt=""
+                      aria-hidden
+                    />
+                    <span>Open...</span>
+                  </span>
+                </SelectItem>
+                <SelectSeparator />
+                {recentRepoOptions.map((item) => (
                   <SelectItem key={item.repo_id} value={item.path} textValue={item.name}>
-                    {item.name}
+                    <span className="repo-select-item">
+                      <span className="repo-select-name">{item.name}</span>
+                      <span className="repo-select-path">{formatHomeRelativePath(item.path)}</span>
+                    </span>
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            <span
-              className="status-pill status-repo-pill"
-              title={repo?.path ?? "Open a repository to start working."}
-            >
-              {repo?.name ?? "No repository selected"}
-            </span>
           </div>
           <div className="status-select">
             <span className="status-label">Worktree</span>
