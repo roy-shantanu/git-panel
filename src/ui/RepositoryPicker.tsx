@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
-import { Diff, Hunk, parseDiff } from "react-diff-view";
-import "react-diff-view/style/index.css";
+import { DiffFile, DiffModeEnum, DiffView, SplitSide } from "@git-diff-view/react";
+import "@git-diff-view/react/styles/diff-view-pure.css";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -110,6 +110,8 @@ type FileIconInfo = {
 
 const ICONS_URL = "/material-icons";
 const STAGED_LIST_ID = "staged";
+const EMPTY_FILES: StatusFile[] = [];
+const EMPTY_CHANGELISTS: Changelist[] = [];
 
 const getFileIconInfo = (path: string): FileIconInfo => {
   const iconName = getIconForFilePath(path);
@@ -118,6 +120,175 @@ const getFileIconInfo = (path: string): FileIconInfo => {
     url: getIconUrlForFilePath(path, ICONS_URL)
   };
 };
+
+type HunkToggleItem = {
+  id: string;
+  label: string;
+};
+
+type HunkExtendData = {
+  oldFile: Record<string, { data: HunkToggleItem[] }>;
+  newFile: Record<string, { data: HunkToggleItem[] }>;
+};
+
+const NO_NEWLINE_MARKER = "\\ No newline at end of file";
+
+const sanitizePatchText = (text: string) =>
+  text
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .filter((line) => line !== NO_NEWLINE_MARKER)
+    .join("\n")
+    .trim();
+
+const buildPatchFromHunks = (filePath: string, hunks: DiffHunk[]) => {
+  if (hunks.length === 0) return "";
+
+  const normalizedPath = filePath.replace(/\\/g, "/");
+  const syntheticHeader = `diff --git a/${normalizedPath} b/${normalizedPath}\n--- a/${normalizedPath}\n+++ b/${normalizedPath}`;
+
+  const lines: string[] = [];
+  let lastHeader = "";
+  for (const hunk of hunks) {
+    const header = sanitizePatchText(hunk.file_header);
+    if (header && header !== lastHeader) {
+      lines.push(header);
+      lastHeader = header;
+    }
+    lines.push(hunk.header);
+    if (hunk.content) lines.push(sanitizePatchText(hunk.content));
+  }
+
+  const body = lines.filter(Boolean).join("\n");
+  return body.startsWith("diff --git ") ? body : `${syntheticHeader}\n${body}`;
+};
+
+const buildHunkExtendData = (diffFile: DiffFile, hunks: DiffHunk[]): HunkExtendData => {
+  const extendData: HunkExtendData = { oldFile: {}, newFile: {} };
+
+  const resolveLine = (lineNumber: number, side: SplitSide) => {
+    if (!Number.isFinite(lineNumber) || lineNumber <= 0) return null;
+    const index = diffFile.getSplitLineIndexByLineNumber(lineNumber, side);
+    if (index < 0) return null;
+    const line =
+      side === SplitSide.old
+        ? diffFile.getSplitLeftLine(index)
+        : diffFile.getSplitRightLine(index);
+    return typeof line.lineNumber === "number" ? line.lineNumber : null;
+  };
+
+  const addEntry = (
+    side: "oldFile" | "newFile",
+    line: number,
+    item: HunkToggleItem
+  ) => {
+    const key = String(line);
+    const existing = extendData[side][key];
+    if (existing) {
+      existing.data.push(item);
+      return;
+    }
+    extendData[side][key] = { data: [item] };
+  };
+
+  for (const hunk of hunks) {
+    const nextCandidate = resolveLine(hunk.new_start, SplitSide.new);
+    const oldCandidate = resolveLine(hunk.old_start, SplitSide.old);
+
+    const target =
+      hunk.new_lines > 0 && nextCandidate !== null
+        ? { side: "newFile" as const, line: nextCandidate }
+        : hunk.old_lines > 0 && oldCandidate !== null
+          ? { side: "oldFile" as const, line: oldCandidate }
+          : nextCandidate !== null
+            ? { side: "newFile" as const, line: nextCandidate }
+            : oldCandidate !== null
+              ? { side: "oldFile" as const, line: oldCandidate }
+              : null;
+
+    if (!target) continue;
+
+    addEntry(target.side, target.line, {
+      id: hunk.id,
+      label: hunk.header.trim() || `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@`
+    });
+  }
+
+  return extendData;
+};
+
+const createDiffFile = (filePath: string, patchText: string, theme: string) => {
+  const nextDiffFile = new DiffFile(filePath, "", filePath, "", [patchText], "", "");
+  nextDiffFile.initTheme(theme === "dark" ? "dark" : "light");
+  nextDiffFile.initRaw();
+  nextDiffFile.buildSplitDiffLines();
+  return nextDiffFile;
+};
+
+type DiffPanelProps = {
+  diffLoading: boolean;
+  diffParseError: string | null;
+  diffFile: DiffFile | null;
+  theme: string;
+  hunkSelectionEnabled: boolean;
+  hunkExtendData: HunkExtendData | undefined;
+  selectedHunkIds: Set<string>;
+  onToggleHunk: (id: string) => void;
+};
+
+const DiffPanel = memo(function DiffPanel({
+  diffLoading,
+  diffParseError,
+  diffFile,
+  theme,
+  hunkSelectionEnabled,
+  hunkExtendData,
+  selectedHunkIds,
+  onToggleHunk
+}: DiffPanelProps) {
+  const renderHunkExtendLine = useCallback(
+    ({ data }: { data: HunkToggleItem[] | undefined }) => {
+      if (!hunkSelectionEnabled) return null;
+      if (!Array.isArray(data) || data.length === 0) return null;
+      return (
+        <div className="hunk-extend-list">
+          {data.map((entry) => (
+            <label key={entry.id} className="hunk-toggle hunk-toggle-inline">
+              <input
+                type="checkbox"
+                checked={selectedHunkIds.has(entry.id)}
+                onChange={() => onToggleHunk(entry.id)}
+              />
+              <span className="hunk-toggle-label">{entry.label}</span>
+            </label>
+          ))}
+        </div>
+      );
+    },
+    [hunkSelectionEnabled, onToggleHunk, selectedHunkIds]
+  );
+
+  return (
+    <div className="diff-view">
+      {diffLoading && <div className="muted">Loading diff...</div>}
+      {!diffLoading && diffParseError && <div className="muted">{diffParseError}</div>}
+      {!diffLoading && !diffParseError && !diffFile && (
+        <div className="muted">No diff to display.</div>
+      )}
+      {!diffLoading && !diffParseError && diffFile && (
+        <DiffView<HunkToggleItem[]>
+          diffFile={diffFile}
+          diffViewMode={DiffModeEnum.Split}
+          diffViewTheme={theme === "dark" ? "dark" : "light"}
+          diffViewWrap={false}
+          diffViewHighlight={false}
+          extendData={hunkSelectionEnabled ? hunkExtendData : undefined}
+          renderExtendLine={renderHunkExtendLine}
+        />
+      )}
+    </div>
+  );
+});
 
 export default function RepositoryPicker() {
   const { repo, status, recent, setRepo, setStatus, setRecent } = useAppStore();
@@ -175,7 +346,7 @@ export default function RepositoryPicker() {
   const [deleteChangelistTarget, setDeleteChangelistTarget] =
     useState<Changelist | null>(null);
 
-  const files = status?.files ?? [];
+  const files = status?.files ?? EMPTY_FILES;
   const stagedFiles = useMemo(() => {
     const list = files.filter((file) => isStagedStatus(file.status));
     list.sort((a, b) => a.path.localeCompare(b.path));
@@ -832,7 +1003,7 @@ export default function RepositoryPicker() {
     }
   };
 
-  const toggleHunk = (id: string) => {
+  const toggleHunk = useCallback((id: string) => {
     setSelectedHunkIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -842,7 +1013,7 @@ export default function RepositoryPicker() {
       }
       return next;
     });
-  };
+  }, []);
 
   const handleAssignHunks = async () => {
     if (!repo || !selectedPath) return;
@@ -975,7 +1146,7 @@ export default function RepositoryPicker() {
   };
 
   const branchValue = branches?.current ? `local::${branches.current}` : "";
-  const changelistItems = changelists?.lists ?? [];
+  const changelistItems = changelists?.lists ?? EMPTY_CHANGELISTS;
   const activeChangelistId = changelists?.active_id ?? "default";
 
   useEffect(() => {
@@ -985,23 +1156,57 @@ export default function RepositoryPicker() {
     }
   }, [changelists, changelistItems, selectedChangelistId]);
 
-  const { parsedDiff, diffParseError } = useMemo(() => {
-    if (!diffText) return { parsedDiff: [], diffParseError: null };
-    try {
-      return { parsedDiff: parseDiff(diffText), diffParseError: null };
-    } catch (error) {
-      console.error("parseDiff failed", error);
-      return { parsedDiff: [], diffParseError: "Diff could not be parsed." };
+  const { diffFile, diffParseError, hunkExtendData } = useMemo(() => {
+    if (!diffText) {
+      return {
+        diffFile: null as DiffFile | null,
+        diffParseError: null as string | null,
+        hunkExtendData: undefined as HunkExtendData | undefined
+      };
     }
-  }, [diffText]);
 
-  const hunkIdByHeader = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const hunk of diffHunks) {
-      map.set(hunk.header, hunk.id);
+    const filePath = selectedPath ?? selectedFile?.path ?? "";
+    const primaryPatch = sanitizePatchText(diffText);
+    let fallbackPatch = "";
+
+    try {
+      const nextDiffFile = createDiffFile(filePath, primaryPatch, theme);
+
+      return {
+        diffFile: nextDiffFile,
+        diffParseError: null,
+        hunkExtendData: hunkSelectionEnabled
+          ? buildHunkExtendData(nextDiffFile, diffHunks)
+          : undefined
+      };
+    } catch (error) {
+      console.error("primary diff parse failed", error);
     }
-    return map;
-  }, [diffHunks]);
+
+    fallbackPatch = buildPatchFromHunks(filePath, diffHunks);
+    if (fallbackPatch && fallbackPatch !== primaryPatch) {
+      try {
+        const nextDiffFile = createDiffFile(filePath, fallbackPatch, theme);
+        return {
+          diffFile: nextDiffFile,
+          diffParseError: null,
+          hunkExtendData: hunkSelectionEnabled
+            ? buildHunkExtendData(nextDiffFile, diffHunks)
+            : undefined
+        };
+      } catch (error) {
+        console.error("fallback diff parse failed", error);
+      }
+    }
+
+    return {
+      diffFile: null,
+      diffParseError: /Binary files|GIT binary patch/i.test(diffText)
+        ? "Binary diff cannot be rendered."
+        : "Diff could not be parsed.",
+      hunkExtendData: undefined
+    };
+  }, [diffHunks, diffText, hunkSelectionEnabled, selectedFile?.path, selectedPath, theme]);
 
   return (
     <div className="ide-shell">
@@ -1857,43 +2062,16 @@ export default function RepositoryPicker() {
                     )}
                   </div>
                 )}
-                <div className="diff-view">
-                  {diffLoading && <div className="muted">Loading diff...</div>}
-                  {!diffLoading && diffParseError && (
-                    <div className="muted">{diffParseError}</div>
-                  )}
-                  {!diffLoading && !diffParseError && parsedDiff.length === 0 && (
-                    <div className="muted">No diff to display.</div>
-                  )}
-                  {parsedDiff.map((file) => (
-                    <Diff
-                      key={file.oldPath}
-                      viewType="split"
-                      diffType={file.type}
-                      hunks={file.hunks}
-                    >
-                      {(hunks) =>
-                        hunks.map((hunk) => {
-                          const hunkId = hunkIdByHeader.get(hunk.content.trim());
-                          return (
-                            <div key={hunk.content} className="diff-hunk-row">
-                              {hunkSelectionEnabled && hunkId && (
-                                <label className="hunk-toggle">
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedHunkIds.has(hunkId)}
-                                    onChange={() => toggleHunk(hunkId)}
-                                  />
-                                </label>
-                              )}
-                              <Hunk hunk={hunk} />
-                            </div>
-                          );
-                        })
-                      }
-                    </Diff>
-                  ))}
-                </div>
+                <DiffPanel
+                  diffLoading={diffLoading}
+                  diffParseError={diffParseError}
+                  diffFile={diffFile}
+                  theme={theme}
+                  hunkSelectionEnabled={hunkSelectionEnabled}
+                  hunkExtendData={hunkExtendData}
+                  selectedHunkIds={selectedHunkIds}
+                  onToggleHunk={toggleHunk}
+                />
               </div>
             </div>
           </div>

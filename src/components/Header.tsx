@@ -1,5 +1,5 @@
 import React from 'react';
-import { WorktreeInfo, BranchList } from '../types/ipc';
+import { WorktreeInfo } from '../types/ipc';
 import { useTheme } from './ThemeProvider';
 
 interface HeaderProps {

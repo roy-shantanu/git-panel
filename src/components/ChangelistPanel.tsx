@@ -26,6 +26,8 @@ export function ChangelistPanel({
     onDelete,
     counts
 }: ChangelistPanelProps) {
+    void onSetActive;
+    void onRename;
     return (
         <div className="sidebar-section" style={{ borderBottom: '1px solid var(--border-color)' }}>
             <div className="sidebar-section-title" style={{ justifyContent: 'space-between' }}>

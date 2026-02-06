@@ -22,6 +22,7 @@ export function CommitPanel({
     error,
     preview
 }: CommitPanelProps) {
+    void preview;
     return (
         <div style={{ padding: '10px', borderBottom: '1px solid var(--border-color)' }}>
             <textarea

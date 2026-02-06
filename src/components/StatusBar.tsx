@@ -9,6 +9,7 @@ interface StatusBarProps {
 }
 
 export function StatusBar({ branches, currentBranch, onCheckout, isBusy }: StatusBarProps) {
+    void currentBranch;
     return (
         <div className="status-bar" style={{
             height: '24px',
@@ -32,7 +33,7 @@ export function StatusBar({ branches, currentBranch, onCheckout, isBusy }: Statu
                         const val = e.target.value;
                         if (!val) return;
                         const [type, name] = val.split("::");
-                        if (type && name) onCheckout(type as any, name);
+                        if ((type === "local" || type === "remote") && name) onCheckout(type, name);
                     }}
                     style={{
                         background: 'transparent',
