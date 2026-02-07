@@ -6,32 +6,38 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
+import type { RepoListItem, RepoSummary, WorktreeInfo } from "../../types/ipc";
 
-interface Worktree {
-  name: string;
-  path: string;
-  branch: string;
+interface WorktreeSwitcherProps {
+  repo?: RepoSummary;
+  recent: RepoListItem[];
+  worktrees: WorktreeInfo[];
+  repoBusy: boolean;
+  worktreeBusy: boolean;
+  fetchBusy: boolean;
+  onOpenRepo: () => void;
+  onSelectRecentRepo: (path: string) => void;
+  onSelectWorktree: (path: string) => void;
+  onFetch: () => void;
 }
 
-interface Repository {
-  name: string;
-  path: string;
-}
+const getWorktreeName = (path: string) => {
+  const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+};
 
-const repositories: Repository[] = [
-  { name: "my-project", path: "/Users/dev/projects/my-project" },
-  { name: "backend-api", path: "/Users/dev/projects/backend-api" },
-  { name: "frontend-app", path: "/Users/dev/projects/frontend-app" },
-  { name: "shared-library", path: "/Users/dev/projects/shared-library" },
-];
-
-const worktrees: Worktree[] = [
-  { name: "main", path: "/Users/dev/project", branch: "main" },
-  { name: "feature-branch", path: "/Users/dev/project-feature", branch: "feature/new-ui" },
-  { name: "hotfix", path: "/Users/dev/project-hotfix", branch: "hotfix/bug-123" },
-];
-
-export function WorktreeSwitcher() {
+export function WorktreeSwitcher({
+  repo,
+  recent,
+  worktrees,
+  repoBusy,
+  worktreeBusy,
+  fetchBusy,
+  onOpenRepo,
+  onSelectRecentRepo,
+  onSelectWorktree,
+  onFetch
+}: WorktreeSwitcherProps) {
   return (
     <div className="flex items-center justify-between px-4 py-2 border-b border-[#323232] bg-[#3c3f41]">
       {/* Left side - Repository and Worktree selectors */}
@@ -42,22 +48,38 @@ export function WorktreeSwitcher() {
           <Folder className="size-4 text-[#afb1b3]" />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" className="h-8 px-3 gap-2 text-sm hover:bg-[#4e5254]">
-                <span className="text-[#bbbbbb]">my-project</span>
+              <Button
+                variant="ghost"
+                className="h-8 px-3 gap-2 text-sm hover:bg-[#4e5254]"
+                disabled={repoBusy}
+              >
+                <span className="text-[#bbbbbb]">{repo?.name ?? "Open repository"}</span>
                 <ChevronDown className="size-3 text-[#787878]" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-80 bg-[#3c3f41] border-[#323232] text-[#bbbbbb] z-50">
-              {repositories.map((repo) => (
+              <DropdownMenuItem
+                onSelect={() => {
+                  setTimeout(() => {
+                    onOpenRepo();
+                  }, 0);
+                }}
+                className="flex items-center gap-2 py-2 px-3 cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+              >
+                <Folder className="size-3 text-[#afb1b3]" />
+                <span className="text-sm text-[#bbbbbb]">Open...</span>
+              </DropdownMenuItem>
+              {recent.map((repoItem) => (
                 <DropdownMenuItem
-                  key={repo.name}
+                  key={repoItem.repo_id}
+                  onSelect={() => onSelectRecentRepo(repoItem.path)}
                   className="flex flex-col items-start py-2 px-3 cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
                 >
                   <div className="flex items-center gap-2 w-full">
                     <Folder className="size-3 text-[#afb1b3]" />
-                    <span className="text-sm text-[#bbbbbb]">{repo.name}</span>
+                    <span className="text-sm text-[#bbbbbb]">{repoItem.name}</span>
                   </div>
-                  <div className="text-xs text-[#787878] ml-5">{repo.path}</div>
+                  <div className="text-xs text-[#787878] ml-5">{repoItem.path}</div>
                 </DropdownMenuItem>
               ))}
             </DropdownMenuContent>
@@ -73,20 +95,27 @@ export function WorktreeSwitcher() {
           <FolderGit2 className="size-4 text-[#afb1b3]" />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" className="h-8 px-3 gap-2 text-sm hover:bg-[#4e5254]">
-                <span className="text-[#bbbbbb]">main</span>
+              <Button
+                variant="ghost"
+                className="h-8 px-3 gap-2 text-sm hover:bg-[#4e5254]"
+                disabled={!repo || worktreeBusy}
+              >
+                <span className="text-[#bbbbbb]">
+                  {repo ? getWorktreeName(repo.worktree_path) : "No worktree"}
+                </span>
                 <ChevronDown className="size-3 text-[#787878]" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-80 bg-[#3c3f41] border-[#323232] text-[#bbbbbb] z-50">
               {worktrees.map((worktree) => (
                 <DropdownMenuItem
-                  key={worktree.name}
+                  key={worktree.path}
+                  onSelect={() => onSelectWorktree(worktree.path)}
                   className="flex flex-col items-start py-2 px-3 cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
                 >
                   <div className="flex items-center gap-2 w-full">
                     <FolderGit2 className="size-3 text-[#afb1b3]" />
-                    <span className="text-sm text-[#bbbbbb]">{worktree.name}</span>
+                    <span className="text-sm text-[#bbbbbb]">{getWorktreeName(worktree.path)}</span>
                   </div>
                   <div className="text-xs text-[#787878] ml-5">{worktree.path}</div>
                   <div className="text-xs text-[#287bde] ml-5">{worktree.branch}</div>
@@ -102,8 +131,10 @@ export function WorktreeSwitcher() {
         <Button
           variant="ghost"
           size="icon"
-          className="size-8 hover:bg-[#4e5254] text-[#afb1b3]"
+          className={`size-8 hover:bg-[#4e5254] text-[#afb1b3] ${fetchBusy ? "animate-spin" : ""}`}
           title="Git Fetch"
+          disabled={!repo || fetchBusy}
+          onClick={onFetch}
         >
           <RefreshCw className="size-4" />
         </Button>
@@ -113,6 +144,7 @@ export function WorktreeSwitcher() {
           size="icon"
           className="size-8 hover:bg-[#4e5254] text-[#afb1b3]"
           title="Git Pull"
+          disabled
         >
           <Download className="size-4" />
         </Button>
@@ -122,6 +154,7 @@ export function WorktreeSwitcher() {
           size="icon"
           className="size-8 hover:bg-[#4e5254] text-[#afb1b3]"
           title="Git Push"
+          disabled
         >
           <Upload className="size-4" />
         </Button>
@@ -133,6 +166,7 @@ export function WorktreeSwitcher() {
           size="icon"
           className="size-8 hover:bg-[#4e5254] text-[#afb1b3]"
           title="Commit Staged"
+          disabled
         >
           <GitCommit className="size-4" />
         </Button>
