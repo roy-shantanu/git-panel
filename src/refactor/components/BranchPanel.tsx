@@ -35,7 +35,7 @@ export function BranchPanel({
         <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"
-            className="h-6 px-2 gap-1.5 text-xs hover:bg-[#4e5254]"
+            className="h-5 px-2 gap-1 text-[11px] hover:bg-[#4e5254]"
             disabled={checkoutBusy}
           >
             <GitBranch className="size-3 text-[#afb1b3]" />
@@ -46,7 +46,7 @@ export function BranchPanel({
         <DropdownMenuContent
           align="start"
           side="top"
-          className="w-80 bg-[#3c3f41] border-[#323232] max-h-96 text-[#bbbbbb] z-50"
+          className="w-96 bg-[#3c3f41] border-[#323232] max-h-80 text-[#bbbbbb] z-50"
         >
           <div className="px-2 py-1.5 text-xs text-[#787878]">Local Branches</div>
           {localBranches.length === 0 && (
@@ -58,11 +58,11 @@ export function BranchPanel({
             <DropdownMenuItem
               key={branch}
               onSelect={() => onCheckout("local", branch)}
-              className="flex items-start gap-2 py-2 px-3 cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+              className="flex items-start gap-2 py-1.5 px-2.5 cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
             >
               <GitBranch className="size-3 text-[#afb1b3] mt-0.5" />
               <div className="flex-1 min-w-0">
-                <div className="text-sm text-[#bbbbbb]">{branch}</div>
+                <div className="text-xs text-[#bbbbbb]">{branch}</div>
                 <div className="text-xs text-[#787878] truncate">Local branch</div>
               </div>
             </DropdownMenuItem>
@@ -78,11 +78,11 @@ export function BranchPanel({
             <DropdownMenuItem
               key={branch}
               onSelect={() => onCheckout("remote", branch)}
-              className="flex items-start gap-2 py-2 px-3 cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+              className="flex items-start gap-2 py-1.5 px-2.5 cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
             >
               <GitBranch className="size-3 text-[#afb1b3] mt-0.5" />
               <div className="flex-1 min-w-0">
-                <div className="text-sm text-[#bbbbbb]">{branch}</div>
+                <div className="text-xs text-[#bbbbbb]">{branch}</div>
                 <div className="text-xs text-[#787878] truncate">Remote branch</div>
               </div>
             </DropdownMenuItem>

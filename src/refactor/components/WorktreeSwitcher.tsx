@@ -59,24 +59,24 @@ export function WorktreeSwitcher({
             <DropdownMenuTrigger asChild>
               <Button
                 variant="ghost"
-                className="h-8 px-3 gap-2 text-sm hover:bg-[#4e5254]"
+                className="h-7 px-2.5 gap-1.5 text-xs hover:bg-[#4e5254]"
                 disabled={repoBusy}
               >
                 <span className="text-[#bbbbbb]">{repo?.name ?? "Open repository"}</span>
                 <ChevronDown className="size-3 text-[#787878]" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-80 bg-[#3c3f41] border-[#323232] text-[#bbbbbb] z-50">
+            <DropdownMenuContent align="start" className="w-72 bg-[#3c3f41] border-[#323232] text-[#bbbbbb] z-50">
               <DropdownMenuItem
                 onSelect={() => {
                   setTimeout(() => {
                     onOpenRepo();
                   }, 0);
                 }}
-                className="flex items-center gap-2 py-2 px-3 cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+                className="flex items-center gap-2 py-1.5 px-2.5 cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
               >
                 <Folder className="size-3 text-[#afb1b3]" />
-                <span className="text-sm text-[#bbbbbb]">Open...</span>
+                <span className="text-xs text-[#bbbbbb]">Open...</span>
               </DropdownMenuItem>
               <DropdownMenuSeparator className="bg-[#323232]" />
               {recent.length === 0 && (
@@ -88,15 +88,13 @@ export function WorktreeSwitcher({
                 <DropdownMenuItem
                   key={repoItem.repo_id}
                   onSelect={() => onSelectRecentRepo(repoItem.path)}
-                  className="flex flex-col items-start py-2 px-3 cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+                  className="flex items-center gap-2 py-1.5 px-2.5 cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
                 >
-                  <div className="flex items-center gap-2 w-full">
-                    <Folder className="size-3 text-[#afb1b3]" />
-                    <span className="text-sm text-[#bbbbbb]">{repoItem.name}</span>
-                  </div>
-                  <div className="text-xs text-[#787878] ml-5">
+                  <Folder className="size-3 text-[#afb1b3]" />
+                  <span className="text-xs text-[#bbbbbb] shrink-0">{repoItem.name}</span>
+                  <span className="text-xs text-[#787878] truncate min-w-0">
                     {formatHomeRelativePath(repoItem.path)}
-                  </div>
+                  </span>
                 </DropdownMenuItem>
               ))}
             </DropdownMenuContent>
@@ -114,7 +112,7 @@ export function WorktreeSwitcher({
             <DropdownMenuTrigger asChild>
               <Button
                 variant="ghost"
-                className="h-8 px-3 gap-2 text-sm hover:bg-[#4e5254]"
+                className="h-7 px-2.5 gap-1.5 text-xs hover:bg-[#4e5254]"
                 disabled={!repo || worktreeBusy || worktrees.length === 0}
               >
                 <span className="text-[#bbbbbb]">
@@ -123,7 +121,7 @@ export function WorktreeSwitcher({
                 <ChevronDown className="size-3 text-[#787878]" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-80 bg-[#3c3f41] border-[#323232] text-[#bbbbbb] z-50">
+            <DropdownMenuContent align="start" className="w-96 bg-[#3c3f41] border-[#323232] text-[#bbbbbb] z-50">
               {worktrees.length === 0 && (
                 <DropdownMenuItem disabled className="text-xs text-[#787878]">
                   {repo?.worktree_path ?? "No worktrees"}
@@ -133,14 +131,18 @@ export function WorktreeSwitcher({
                 <DropdownMenuItem
                   key={worktree.path}
                   onSelect={() => onSelectWorktree(worktree.path)}
-                  className="flex flex-col items-start py-2 px-3 cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+                  className="flex flex-col items-start py-1.5 px-2.5 cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
                 >
-                  <div className="flex items-center gap-2 w-full">
+                  <div className="flex items-center gap-2 w-full min-w-0">
                     <FolderGit2 className="size-3 text-[#afb1b3]" />
-                    <span className="text-sm text-[#bbbbbb]">{getWorktreeName(worktree.path)}</span>
+                    <span className="text-xs text-[#bbbbbb] shrink-0">
+                      {getWorktreeName(worktree.path)}
+                    </span>
+                    <span className="text-xs text-[#787878] truncate min-w-0">
+                      {formatHomeRelativePath(worktree.path)}
+                    </span>
                   </div>
-                  <div className="text-xs text-[#787878] ml-5">{worktree.path}</div>
-                  <div className="text-xs text-[#287bde] ml-5">{worktree.branch}</div>
+                  <span className="text-xs text-[#787878] ml-5">{worktree.branch}</span>
                 </DropdownMenuItem>
               ))}
             </DropdownMenuContent>
