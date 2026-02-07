@@ -8,16 +8,24 @@ import { BranchPanel } from "./components/BranchPanel";
 import { WelcomePage } from "./components/WelcomePage";
 import { useAppStore } from "../state/store";
 import {
+  clAssignFiles,
+  clCreate,
+  clDelete,
+  clList,
+  clRename,
+  clSetActive,
   repoBranches,
   repoCheckout,
   repoFetch,
   repoListRecent,
   repoOpen,
   repoOpenWorktree,
+  repoStage,
   repoStatus,
+  repoUnstage,
   wtList
 } from "../api/tauri";
-import type { BranchList, WorktreeInfo } from "../types/ipc";
+import type { BranchList, ChangelistState, StatusFile, WorktreeInfo } from "../types/ipc";
 
 interface FileChange {
   path: string;
@@ -29,11 +37,14 @@ interface FileChange {
 export default function App() {
   const { repo, status, recent, setRepo, setRecent, setStatus } = useAppStore();
   const [branches, setBranches] = useState<BranchList | null>(null);
+  const [changelists, setChangelists] = useState<ChangelistState | null>(null);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [repoBusy, setRepoBusy] = useState(false);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
   const [branchBusy, setBranchBusy] = useState(false);
   const [fetchBusy, setFetchBusy] = useState(false);
+  const [fileActionBusyPath, setFileActionBusyPath] = useState<string | null>(null);
+  const [selectedChangelistId, setSelectedChangelistId] = useState("default");
   const [selectedFile, setSelectedFile] = useState<FileChange | null>({
     path: "src/app/App.tsx",
     status: "modified",
@@ -61,12 +72,23 @@ export default function App() {
     if (!repo?.repo_id) {
       setStatus(undefined);
       setBranches(null);
+      setChangelists(null);
+      setSelectedChangelistId("default");
       return;
     }
 
     repoStatus(repo.repo_id).then(setStatus).catch(console.error);
     repoBranches(repo.repo_id).then(setBranches).catch(console.error);
+    clList(repo.repo_id).then(setChangelists).catch(console.error);
   }, [repo?.repo_id, setStatus]);
+
+  useEffect(() => {
+    if (!changelists) return;
+    const ids = new Set(changelists.lists.map((item) => item.id));
+    if (!ids.has(selectedChangelistId)) {
+      setSelectedChangelistId("default");
+    }
+  }, [changelists, selectedChangelistId]);
 
   useEffect(() => {
     if (!repo?.repo_root) {
@@ -172,6 +194,93 @@ export default function App() {
     }
   };
 
+  const refreshRepoData = async (repoId: string) => {
+    const [nextStatus, nextChangelists] = await Promise.all([
+      repoStatus(repoId),
+      clList(repoId)
+    ]);
+    setStatus(nextStatus);
+    setChangelists(nextChangelists);
+  };
+
+  const handleCreateChangelist = async (name: string) => {
+    if (!repo?.repo_id) return;
+    await clCreate(repo.repo_id, name);
+    const next = await clList(repo.repo_id);
+    setChangelists(next);
+  };
+
+  const handleRenameChangelist = async (id: string, name: string) => {
+    if (!repo?.repo_id) return;
+    await clRename(repo.repo_id, id, name);
+    const next = await clList(repo.repo_id);
+    setChangelists(next);
+  };
+
+  const handleDeleteChangelist = async (id: string) => {
+    if (!repo?.repo_id) return;
+    await clDelete(repo.repo_id, id);
+    if (selectedChangelistId === id) {
+      setSelectedChangelistId("default");
+    }
+    const next = await clList(repo.repo_id);
+    setChangelists(next);
+  };
+
+  const handleSetActiveChangelist = async (id: string) => {
+    if (!repo?.repo_id) return;
+    await clSetActive(repo.repo_id, id);
+    const next = await clList(repo.repo_id);
+    setChangelists(next);
+  };
+
+  const handleStageFile = async (file: StatusFile) => {
+    if (!repo?.repo_id) return;
+    try {
+      setFileActionBusyPath(file.path);
+      await repoStage(repo.repo_id, file.path);
+      await refreshRepoData(repo.repo_id);
+    } catch (error) {
+      console.error("repo_stage failed", error);
+    } finally {
+      setFileActionBusyPath(null);
+    }
+  };
+
+  const handleUnstageFile = async (file: StatusFile) => {
+    if (!repo?.repo_id) return;
+    try {
+      setFileActionBusyPath(file.path);
+      await repoUnstage(repo.repo_id, file.path);
+      if (changelists) {
+        const targetId = changelists.active_id ?? "default";
+        try {
+          await clAssignFiles(repo.repo_id, targetId, [file.path]);
+        } catch (assignError) {
+          // Keep unstage successful even if assignment fails due transient backend state.
+          console.error("cl_assign_files failed after unstage", assignError);
+        }
+      }
+      const nextStatus = await repoStatus(repo.repo_id);
+      setStatus(nextStatus);
+      const nextChangelists = await clList(repo.repo_id);
+      setChangelists(nextChangelists);
+    } catch (error) {
+      console.error("repo_unstage failed", error);
+    } finally {
+      setFileActionBusyPath(null);
+    }
+  };
+
+  const handleSelectStatusFile = (file: StatusFile) => {
+    setSelectedFile({
+      path: file.path,
+      status: file.status === "untracked" ? "added" : "modified",
+      additions: 0,
+      deletions: 0
+    });
+  };
+
   return (
     <div className="size-full flex flex-col bg-[#2b2b2b]">
       {!repo ? (
@@ -209,7 +318,18 @@ export default function App() {
             {/* Left Sidebar - Changes Panel */}
             {isSourceControlOpen && (
               <ChangesPanel
-                onFileSelect={setSelectedFile}
+                status={status}
+                changelists={changelists}
+                selectedChangelistId={selectedChangelistId}
+                onSelectedChangelistChange={setSelectedChangelistId}
+                onCreateChangelist={handleCreateChangelist}
+                onRenameChangelist={handleRenameChangelist}
+                onDeleteChangelist={handleDeleteChangelist}
+                onSetActiveChangelist={handleSetActiveChangelist}
+                onStageFile={handleStageFile}
+                onUnstageFile={handleUnstageFile}
+                fileActionBusyPath={fileActionBusyPath}
+                onFileSelect={handleSelectStatusFile}
                 selectedFile={selectedFile}
                 viewMode={viewMode}
                 onViewModeChange={setViewMode}
