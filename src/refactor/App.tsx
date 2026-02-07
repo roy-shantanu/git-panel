@@ -84,6 +84,16 @@ export default function App() {
     return branches.ahead_behind[branches.current] ?? null;
   }, [branches]);
 
+  const recentRepoOptions = useMemo(() => {
+    const seen = new Set<string>();
+    return recent.filter((item) => {
+      const key = (item.repo_root || item.path).replace(/\//g, "\\").toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [recent]);
+
   const handleOpenRepoPicker = async () => {
     try {
       setRepoBusy(true);
@@ -94,6 +104,8 @@ export default function App() {
       if (!path || Array.isArray(path)) return;
       const nextRepo = await repoOpen(path);
       setRepo(nextRepo);
+      const nextRecent = await repoListRecent();
+      setRecent(nextRecent);
     } catch (error) {
       console.error("repo_open failed", error);
     } finally {
@@ -106,6 +118,8 @@ export default function App() {
       setRepoBusy(true);
       const nextRepo = await repoOpen(path);
       setRepo(nextRepo);
+      const nextRecent = await repoListRecent();
+      setRecent(nextRecent);
     } catch (error) {
       console.error("repo_open failed", error);
     } finally {
@@ -162,7 +176,7 @@ export default function App() {
     <div className="size-full flex flex-col bg-[#2b2b2b]">
       {!repo ? (
         <WelcomePage
-          recent={recent}
+          recent={recentRepoOptions}
           repoBusy={repoBusy}
           onOpenRepo={handleOpenRepoPicker}
           onSelectRecentRepo={handleSelectRecentRepo}
@@ -170,13 +184,13 @@ export default function App() {
       ) : (
         <>
           {/* Top Bar - Worktree Switcher */}
-          <WorktreeSwitcher
-            repo={repo}
-            recent={recent}
-            worktrees={worktrees}
-            repoBusy={repoBusy}
-            worktreeBusy={worktreeBusy}
-            fetchBusy={fetchBusy}
+            <WorktreeSwitcher
+              repo={repo}
+              recent={recentRepoOptions}
+              worktrees={worktrees}
+              repoBusy={repoBusy}
+              worktreeBusy={worktreeBusy}
+              fetchBusy={fetchBusy}
             onOpenRepo={handleOpenRepoPicker}
             onSelectRecentRepo={handleSelectRecentRepo}
             onSelectWorktree={handleSelectWorktree}

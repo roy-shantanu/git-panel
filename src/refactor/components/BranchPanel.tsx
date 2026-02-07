@@ -49,6 +49,11 @@ export function BranchPanel({
           className="w-80 bg-[#3c3f41] border-[#323232] max-h-96 text-[#bbbbbb] z-50"
         >
           <div className="px-2 py-1.5 text-xs text-[#787878]">Local Branches</div>
+          {localBranches.length === 0 && (
+            <DropdownMenuItem disabled className="text-xs text-[#787878]">
+              No local branches
+            </DropdownMenuItem>
+          )}
           {localBranches.map((branch) => (
             <DropdownMenuItem
               key={branch}
@@ -64,6 +69,11 @@ export function BranchPanel({
           ))}
           <DropdownMenuSeparator className="bg-[#323232]" />
           <div className="px-2 py-1.5 text-xs text-[#787878]">Remote Branches</div>
+          {remoteBranches.length === 0 && (
+            <DropdownMenuItem disabled className="text-xs text-[#787878]">
+              No remote branches
+            </DropdownMenuItem>
+          )}
           {remoteBranches.map((branch) => (
             <DropdownMenuItem
               key={branch}
