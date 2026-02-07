@@ -1,5 +1,5 @@
-import RepositoryPicker from "./ui/RepositoryPicker";
+import RefactorApp from "./refactor/App";
 
 export default function App() {
-  return <RepositoryPicker />;
+  return <RefactorApp />;
 }

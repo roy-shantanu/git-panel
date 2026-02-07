@@ -1,0 +1,36 @@
+@import './tailwind.css';
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+.refactor-diff-shell {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.refactor-diff-view {
+  height: 100%;
+  width: 100%;
+}
+
+.refactor-diff-view .diff-line-hunk-content,
+.refactor-diff-view .diff-line-old-content,
+.refactor-diff-view .diff-line-new-content,
+.refactor-diff-view .diff-line-unified-content {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+  font-size: 12px;
+}
+
+.refactor-hide-hunks .diff-line-hunk {
+  display: none;
+}
