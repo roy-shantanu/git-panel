@@ -23,13 +23,6 @@ import {
 } from "./ui/dialog";
 import type { ChangelistState, RepoStatus, StatusFile } from "../../types/ipc";
 
-interface FileChange {
-  path: string;
-  status: "modified" | "added" | "deleted";
-  additions: number;
-  deletions: number;
-}
-
 interface ChangesPanelProps {
   status?: RepoStatus;
   changelists: ChangelistState | null;
@@ -42,8 +35,8 @@ interface ChangesPanelProps {
   onStageFile: (file: StatusFile) => Promise<void>;
   onUnstageFile: (file: StatusFile) => Promise<void>;
   fileActionBusyPath: string | null;
-  onFileSelect: (file: StatusFile) => void;
-  selectedFile: FileChange | null;
+  onFileSelect: (file: StatusFile, kind: "staged" | "unstaged") => void;
+  selectedFile: StatusFile | null;
   viewMode: "unified" | "sideBySide";
   onViewModeChange: (mode: "unified" | "sideBySide") => void;
   showHunks: boolean;
@@ -219,7 +212,7 @@ export function ChangesPanel({
   };
 
   return (
-    <div className="w-80 border-r border-[#323232] bg-[#3c3f41] flex flex-col">
+    <div className="w-80 shrink-0 border-r border-[#323232] bg-[#3c3f41] flex flex-col">
       <div className="px-4 py-3 border-b border-[#323232]">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm text-[#bbbbbb]">Source Control</h2>
@@ -305,7 +298,7 @@ export function ChangesPanel({
                         className="grid grid-cols-[minmax(0,1fr)_20px_20px] items-center gap-1 w-full min-w-0"
                       >
                         <button
-                          onClick={() => onFileSelect(file)}
+                          onClick={() => onFileSelect(file, "staged")}
                           className={`flex items-center gap-2 min-w-0 overflow-hidden px-2 py-1.5 rounded text-left hover:bg-[#4e5254] ${
                             selectedFile?.path === file.path ? "bg-[#4e5254]" : ""
                           }`}
@@ -430,7 +423,7 @@ export function ChangesPanel({
                             <button
                               onClick={() => {
                                 onSelectedChangelistChange(list.id);
-                                onFileSelect(file);
+                                onFileSelect(file, "unstaged");
                               }}
                               className={`flex items-center gap-2 min-w-0 overflow-hidden px-2 py-1.5 rounded text-left hover:bg-[#4e5254] ${
                                 selectedFile?.path === file.path ? "bg-[#4e5254]" : ""

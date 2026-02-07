@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import { WorktreeSwitcher } from "./components/WorktreeSwitcher";
 import { LeftNavPanel } from "./components/LeftNavPanel";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { DiffView } from "./components/DiffView";
 import { BranchPanel } from "./components/BranchPanel";
 import { WelcomePage } from "./components/WelcomePage";
+import type { WatcherStatus } from "./components/WatcherPill";
 import { useAppStore } from "../state/store";
 import {
   clAssignFiles,
@@ -20,19 +22,20 @@ import {
   repoListRecent,
   repoOpen,
   repoOpenWorktree,
+  repoDiffPayload,
   repoStage,
   repoStatus,
   repoUnstage,
   wtList
 } from "../api/tauri";
-import type { BranchList, ChangelistState, StatusFile, WorktreeInfo } from "../types/ipc";
-
-interface FileChange {
-  path: string;
-  status: "modified" | "added" | "deleted";
-  additions: number;
-  deletions: number;
-}
+import type {
+  BranchList,
+  ChangelistState,
+  RepoDiffKind,
+  RepoDiffPayload,
+  StatusFile,
+  WorktreeInfo
+} from "../types/ipc";
 
 export default function App() {
   const { repo, status, recent, setRepo, setRecent, setStatus } = useAppStore();
@@ -43,14 +46,16 @@ export default function App() {
   const [worktreeBusy, setWorktreeBusy] = useState(false);
   const [branchBusy, setBranchBusy] = useState(false);
   const [fetchBusy, setFetchBusy] = useState(false);
+  const [watcherBusy, setWatcherBusy] = useState(false);
+  const [watcherStatus, setWatcherStatus] = useState<WatcherStatus>("offline");
+  const [watcherChannelReady, setWatcherChannelReady] = useState(false);
   const [fileActionBusyPath, setFileActionBusyPath] = useState<string | null>(null);
   const [selectedChangelistId, setSelectedChangelistId] = useState("default");
-  const [selectedFile, setSelectedFile] = useState<FileChange | null>({
-    path: "src/app/App.tsx",
-    status: "modified",
-    additions: 45,
-    deletions: 12,
-  });
+  const [selectedFile, setSelectedFile] = useState<StatusFile | null>(null);
+  const [selectedDiffKind, setSelectedDiffKind] = useState<RepoDiffKind>("unstaged");
+  const [selectedDiffPayload, setSelectedDiffPayload] = useState<RepoDiffPayload | null>(null);
+  const [selectedDiffLoading, setSelectedDiffLoading] = useState(false);
+  const [selectedDiffError, setSelectedDiffError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"unified" | "sideBySide">("unified");
   const [showHunks, setShowHunks] = useState(false);
   const [isSourceControlOpen, setIsSourceControlOpen] = useState(true);
@@ -73,7 +78,14 @@ export default function App() {
       setStatus(undefined);
       setBranches(null);
       setChangelists(null);
+      setWatcherBusy(false);
+      setWatcherStatus("offline");
+      setWatcherChannelReady(false);
       setSelectedChangelistId("default");
+      setSelectedFile(null);
+      setSelectedDiffPayload(null);
+      setSelectedDiffLoading(false);
+      setSelectedDiffError(null);
       return;
     }
 
@@ -83,12 +95,114 @@ export default function App() {
   }, [repo?.repo_id, setStatus]);
 
   useEffect(() => {
+    if (!repo?.repo_id) return;
+
+    let cancelled = false;
+    let dispose: (() => void) | null = null;
+
+    const refresh = async () => {
+      try {
+        const [nextStatus, nextChangelists] = await Promise.all([
+          repoStatus(repo.repo_id),
+          clList(repo.repo_id)
+        ]);
+        if (cancelled) return;
+        setStatus(nextStatus);
+        setChangelists(nextChangelists);
+        setWatcherStatus("active");
+      } catch (error) {
+        console.error("repo_changed refresh failed", error);
+        if (!cancelled) setWatcherStatus("degraded");
+      }
+    };
+
+    setWatcherStatus("connecting");
+    setWatcherChannelReady(false);
+
+    listen<string>("repo_changed", (event) => {
+      if (event.payload === repo.repo_id) {
+        refresh();
+      }
+    })
+      .then((unlisten) => {
+        if (cancelled) {
+          unlisten();
+          return;
+        }
+        dispose = unlisten;
+        setWatcherChannelReady(true);
+        setWatcherStatus("active");
+      })
+      .catch((error) => {
+        console.error("repo_changed listener failed", error);
+        if (!cancelled) {
+          setWatcherChannelReady(false);
+          setWatcherStatus("offline");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      if (dispose) dispose();
+    };
+  }, [repo?.repo_id, setStatus]);
+
+  useEffect(() => {
+    if (!repo?.repo_id) return;
+
+    let cancelled = false;
+    let inFlight = false;
+    const intervalMs = 2500;
+
+    const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const [nextStatus, nextChangelists] = await Promise.all([
+          repoStatus(repo.repo_id),
+          clList(repo.repo_id)
+        ]);
+        if (!cancelled) {
+          setStatus(nextStatus);
+          setChangelists(nextChangelists);
+          setWatcherStatus(watcherChannelReady ? "active" : "degraded");
+        }
+      } catch (error) {
+        console.error("repo polling refresh failed", error);
+        if (!cancelled) {
+          setWatcherStatus((prev) => (prev === "offline" ? "offline" : "degraded"));
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const timer = window.setInterval(refresh, intervalMs);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [repo?.repo_id, setStatus, watcherChannelReady]);
+
+  useEffect(() => {
     if (!changelists) return;
     const ids = new Set(changelists.lists.map((item) => item.id));
     if (!ids.has(selectedChangelistId)) {
       setSelectedChangelistId("default");
     }
   }, [changelists, selectedChangelistId]);
+
+  useEffect(() => {
+    if (!selectedFile || !status) return;
+    const matched = status.files.find((file) => file.path === selectedFile.path);
+    if (!matched) {
+      setSelectedFile(null);
+      setSelectedDiffPayload(null);
+      setSelectedDiffError(null);
+      return;
+    }
+    setSelectedFile(matched);
+  }, [selectedFile, status]);
 
   useEffect(() => {
     if (!repo?.repo_root) {
@@ -203,6 +317,20 @@ export default function App() {
     setChangelists(nextChangelists);
   };
 
+  const handleManualRefresh = async () => {
+    if (!repo?.repo_id) return;
+    try {
+      setWatcherBusy(true);
+      await refreshRepoData(repo.repo_id);
+      setWatcherStatus(watcherChannelReady ? "active" : "degraded");
+    } catch (error) {
+      console.error("manual refresh failed", error);
+      setWatcherStatus((prev) => (prev === "offline" ? "offline" : "degraded"));
+    } finally {
+      setWatcherBusy(false);
+    }
+  };
+
   const handleCreateChangelist = async (name: string) => {
     if (!repo?.repo_id) return;
     await clCreate(repo.repo_id, name);
@@ -272,17 +400,45 @@ export default function App() {
     }
   };
 
-  const handleSelectStatusFile = (file: StatusFile) => {
-    setSelectedFile({
-      path: file.path,
-      status: file.status === "untracked" ? "added" : "modified",
-      additions: 0,
-      deletions: 0
-    });
+  useEffect(() => {
+    if (!repo?.repo_id || !selectedFile?.path) {
+      setSelectedDiffPayload(null);
+      setSelectedDiffLoading(false);
+      setSelectedDiffError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setSelectedDiffLoading(true);
+    setSelectedDiffError(null);
+    setSelectedDiffPayload(null);
+    repoDiffPayload(repo.repo_id, selectedFile.path, selectedDiffKind)
+      .then((payload) => {
+        if (cancelled) return;
+        setSelectedDiffPayload(payload);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error("repo_diff_payload failed", error);
+        setSelectedDiffPayload(null);
+        setSelectedDiffError((error as Error)?.message ?? "Diff load failed.");
+      })
+      .finally(() => {
+        if (!cancelled) setSelectedDiffLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [repo?.repo_id, selectedFile?.path, selectedDiffKind]);
+
+  const handleSelectStatusFile = (file: StatusFile, kind: RepoDiffKind) => {
+    setSelectedFile(file);
+    setSelectedDiffKind(kind);
   };
 
   return (
-    <div className="size-full flex flex-col bg-[#2b2b2b]">
+    <div className="size-full h-full overflow-hidden flex flex-col bg-[#2b2b2b]">
       {!repo ? (
         <WelcomePage
           recent={recentRepoOptions}
@@ -307,7 +463,7 @@ export default function App() {
           />
 
           {/* Main Content Area */}
-          <div className="flex-1 flex overflow-hidden">
+          <div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
             {/* Left Nav Panel */}
             <LeftNavPanel
               onCommitClick={handleCommit}
@@ -340,15 +496,18 @@ export default function App() {
 
             {/* Center - Diff View */}
             {selectedFile ? (
-              <DiffView
-                fileName={selectedFile.path}
-                additions={selectedFile.additions}
-                deletions={selectedFile.deletions}
-                viewMode={viewMode}
-                showHunks={showHunks}
-              />
+              <div className="flex-1 min-w-0 min-h-0 overflow-hidden">
+                <DiffView
+                  fileName={selectedFile.path}
+                  payload={selectedDiffPayload}
+                  loading={selectedDiffLoading}
+                  error={selectedDiffError}
+                  viewMode={viewMode}
+                  showHunks={showHunks}
+                />
+              </div>
             ) : (
-              <div className="flex-1 bg-[#2b2b2b] flex items-center justify-center">
+              <div className="flex-1 min-w-0 min-h-0 bg-[#2b2b2b] flex items-center justify-center">
                 <p className="text-[#787878]">Select a file to view changes</p>
               </div>
             )}
@@ -362,7 +521,10 @@ export default function App() {
             aheadBehind={aheadBehind}
             counts={status?.counts}
             checkoutBusy={branchBusy}
+            watcherStatus={watcherStatus}
+            watcherBusy={watcherBusy}
             onCheckout={handleCheckout}
+            onManualRefresh={handleManualRefresh}
           />
         </>
       )}

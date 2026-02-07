@@ -1,5 +1,6 @@
 import { GitBranch, GitCommit, ChevronDown } from "lucide-react";
 import { Button } from "./ui/button";
+import { WatcherPill, type WatcherStatus } from "./WatcherPill";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,7 +17,10 @@ interface BranchPanelProps {
   aheadBehind: { ahead: number; behind: number } | null;
   counts?: RepoCounts;
   checkoutBusy: boolean;
+  watcherStatus: WatcherStatus;
+  watcherBusy: boolean;
   onCheckout: (type: "local" | "remote", name: string) => void;
+  onManualRefresh: () => void;
 }
 
 export function BranchPanel({
@@ -26,7 +30,10 @@ export function BranchPanel({
   aheadBehind,
   counts,
   checkoutBusy,
-  onCheckout
+  watcherStatus,
+  watcherBusy,
+  onCheckout,
+  onManualRefresh
 }: BranchPanelProps) {
   return (
     <div className="h-8 border-t border-[#323232] bg-[#3c3f41] flex items-center px-4 gap-4">
@@ -102,6 +109,12 @@ export function BranchPanel({
 
       {/* Status Info */}
       <div className="ml-auto flex items-center gap-3 text-xs text-[#787878]">
+        <WatcherPill
+          status={watcherStatus}
+          busy={watcherBusy}
+          onRefresh={onManualRefresh}
+        />
+        <span>•</span>
         <span>{(counts?.staged ?? 0) + (counts?.unstaged ?? 0) + (counts?.untracked ?? 0)} changes</span>
         <span>•</span>
         <span>{counts?.staged ?? 0} staged</span>

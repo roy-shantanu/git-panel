@@ -22,7 +22,7 @@ export function LeftNavPanel({ onCommitClick, onSourceControlToggle, isSourceCon
   const [isDarkTheme, setIsDarkTheme] = useState(true);
 
   return (
-    <div className="w-12 bg-[#3c3f41] border-r border-[#2b2b2b] flex flex-col items-center py-2 gap-1">
+    <div className="w-12 shrink-0 bg-[#3c3f41] border-r border-[#2b2b2b] flex flex-col items-center py-2 gap-1">
       {/* Source Control Button */}
       <Button
         variant="ghost"
