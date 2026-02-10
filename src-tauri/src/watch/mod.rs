@@ -51,7 +51,7 @@ impl RepoWatcher {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = stop.clone();
         thread::spawn(move || {
-            let debounce = Duration::from_millis(180);
+            let debounce = Duration::from_millis(400);
             loop {
                 if stop_thread.load(Ordering::Relaxed) {
                     break;

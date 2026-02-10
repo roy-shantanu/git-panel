@@ -1,0 +1,842 @@
+import { useMemo, useState } from "react";
+import {
+  ChevronRight,
+  ChevronDown,
+  Undo2,
+  Minus,
+  Plus,
+  SplitSquareHorizontal,
+  AlignJustify
+} from "lucide-react";
+import { getIconForFilePath, getIconUrlForFilePath } from "vscode-material-icons";
+import { ScrollArea } from "./ui/scroll-area";
+import { Button } from "./ui/button";
+import { Switch } from "./ui/switch";
+import { Label } from "./ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "./ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from "./ui/dropdown-menu";
+import type { ChangelistState, RepoDiffKind, RepoStatus, StatusFile } from "../../types/ipc";
+
+interface ChangesPanelProps {
+  status?: RepoStatus;
+  changelists: ChangelistState | null;
+  selectedChangelistId: string;
+  onSelectedChangelistChange: (id: string) => void;
+  onCreateChangelist: (name: string) => Promise<void>;
+  onRenameChangelist: (id: string, name: string) => Promise<void>;
+  onDeleteChangelist: (id: string) => Promise<void>;
+  onSetActiveChangelist: (id: string) => Promise<void>;
+  onStageFile: (file: StatusFile) => Promise<void>;
+  onUnstageFile: (file: StatusFile) => Promise<void>;
+  fileActionBusyPath: string | null;
+  onFileSelect: (file: StatusFile, kind: "staged" | "unstaged") => void;
+  selectedFile: StatusFile | null;
+  selectedDiffKind: RepoDiffKind;
+  viewMode: "unified" | "sideBySide";
+  onViewModeChange: (mode: "unified" | "sideBySide") => void;
+  showHunks: boolean;
+  onShowHunksChange: (show: boolean) => void;
+}
+
+const STAGED_LIST_ID = "staged";
+const UNVERSIONED_LIST_ID = "unversioned-files";
+const UNVERSIONED_LIST_NAME = "Unversioned files";
+const EMPTY_FILES: StatusFile[] = [];
+const ICONS_URL = "/material-icons";
+
+const isStagedStatus = (status: StatusFile["status"]) =>
+  status === "staged" || status === "both";
+
+const isTrackedUnstagedStatus = (status: StatusFile["status"]) =>
+  status === "unstaged" || status === "both" || status === "conflicted";
+
+const isUnversionedStatus = (status: StatusFile["status"]) => status === "untracked";
+
+const getStatusTextColor = (status: StatusFile["status"]) => {
+  if (status === "untracked") return "text-[#d7ba7d]"; // unversioned
+  if (status === "conflicted") return "text-[#c75450]"; // deleted/conflict fallback
+  return "text-[#6897bb]"; // changed
+};
+
+const getFileIconInfo = (path: string) => {
+  const iconName = getIconForFilePath(path);
+  return {
+    className: `ext-${iconName}`,
+    url: getIconUrlForFilePath(path, ICONS_URL)
+  };
+};
+
+const splitPath = (path: string) => {
+  const normalized = path.replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  const name = parts.pop() ?? normalized;
+  const dir = parts.join("/");
+  return { name, dir };
+};
+
+export function ChangesPanel({
+  status,
+  changelists,
+  selectedChangelistId,
+  onSelectedChangelistChange,
+  onCreateChangelist,
+  onRenameChangelist,
+  onDeleteChangelist,
+  onSetActiveChangelist,
+  onStageFile,
+  onUnstageFile,
+  fileActionBusyPath,
+  onFileSelect,
+  selectedFile,
+  selectedDiffKind,
+  viewMode,
+  onViewModeChange,
+  showHunks,
+  onShowHunksChange
+}: ChangesPanelProps) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createName, setCreateName] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
+  const [renameName, setRenameName] = useState("");
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const [panelBusy, setPanelBusy] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{
+    open: boolean;
+    x: number;
+    y: number;
+    listId: string | null;
+  }>({
+    open: false,
+    x: 0,
+    y: 0,
+    listId: null
+  });
+
+  const files = status?.files ?? EMPTY_FILES;
+  const stagedFiles = useMemo(
+    () => files.filter((file) => isStagedStatus(file.status)),
+    [files]
+  );
+  const unversionedFiles = useMemo(
+    () => files.filter((file) => isUnversionedStatus(file.status)),
+    [files]
+  );
+
+  const filesByChangelist = useMemo(() => {
+    const map = new Map<string, StatusFile[]>();
+    for (const file of files) {
+      if (!isTrackedUnstagedStatus(file.status)) continue;
+      const key = file.changelist_id ?? "default";
+      const list = map.get(key);
+      if (list) {
+        list.push(file);
+      } else {
+        map.set(key, [file]);
+      }
+    }
+    return map;
+  }, [files]);
+
+  const unstagedCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const file of files) {
+      if (!isTrackedUnstagedStatus(file.status)) continue;
+      const key = file.changelist_id ?? "default";
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }, [files]);
+
+  const changelistItems = changelists?.lists ?? [];
+  const activeChangelistId = changelists?.active_id ?? "default";
+  const activeChangelistName =
+    changelistItems.find((item) => item.id === activeChangelistId)?.name ?? "Default";
+  const contextMenuTarget =
+    contextMenu.listId === null
+      ? null
+      : changelistItems.find((item) => item.id === contextMenu.listId) ?? null;
+  const contextTargetIsRealList = !!contextMenuTarget;
+  const contextTargetIsDefault = contextMenuTarget?.id === "default";
+  const contextTargetIsActive = contextMenuTarget?.id === activeChangelistId;
+  const deleteMoveTargetName =
+    deleteTarget?.id === activeChangelistId ? "Default" : activeChangelistName;
+
+  const toggleSection = (id: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const confirmCreate = async () => {
+    const name = createName.trim();
+    if (!name) {
+      setCreateError("Changelist name is required.");
+      return;
+    }
+    try {
+      setPanelBusy(true);
+      await onCreateChangelist(name);
+      setCreateOpen(false);
+      setCreateName("");
+      setCreateError(null);
+    } catch (error) {
+      console.error("changelist create failed", error);
+      setCreateError("Create changelist failed.");
+    } finally {
+      setPanelBusy(false);
+    }
+  };
+
+  const confirmRename = async () => {
+    if (!renameTarget) return;
+    const name = renameName.trim();
+    if (!name) {
+      setRenameError("Changelist name is required.");
+      return;
+    }
+    if (name === renameTarget.name) {
+      setRenameError("Name is unchanged.");
+      return;
+    }
+    try {
+      setPanelBusy(true);
+      await onRenameChangelist(renameTarget.id, name);
+      setRenameTarget(null);
+      setRenameName("");
+      setRenameError(null);
+    } catch (error) {
+      console.error("changelist rename failed", error);
+      setRenameError("Rename changelist failed.");
+    } finally {
+      setPanelBusy(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    try {
+      setPanelBusy(true);
+      await onDeleteChangelist(deleteTarget.id);
+      setDeleteTarget(null);
+    } catch (error) {
+      console.error("changelist delete failed", error);
+    } finally {
+      setPanelBusy(false);
+    }
+  };
+
+  const openCreateDialog = () => {
+    setCreateName("");
+    setCreateError(null);
+    setCreateOpen(true);
+  };
+
+  const openContextMenu = (
+    event: { preventDefault: () => void; clientX: number; clientY: number },
+    listId: string | null
+  ) => {
+    if (!listId || listId === UNVERSIONED_LIST_ID) return;
+    const list = changelistItems.find((item) => item.id === listId);
+    if (!list) return;
+    const isDefault = list.id === "default";
+    const isActive = list.id === activeChangelistId;
+    if (isDefault && isActive) return;
+
+    event.preventDefault();
+    setContextMenu({
+      open: true,
+      x: event.clientX,
+      y: event.clientY,
+      listId
+    });
+  };
+
+  const handleContextSetActiveChangelist = async () => {
+    if (!contextMenuTarget || contextTargetIsActive) return;
+    try {
+      setPanelBusy(true);
+      await onSetActiveChangelist(contextMenuTarget.id);
+    } catch (error) {
+      console.error("context set active failed", error);
+    } finally {
+      setPanelBusy(false);
+      setContextMenu((prev) => ({ ...prev, open: false }));
+    }
+  };
+
+  const handleContextDeleteChangelist = () => {
+    if (!contextMenuTarget || contextTargetIsDefault) return;
+    setDeleteTarget({ id: contextMenuTarget.id, name: contextMenuTarget.name });
+    setContextMenu((prev) => ({ ...prev, open: false }));
+  };
+
+  const handleContextRenameChangelist = () => {
+    if (!contextMenuTarget || contextTargetIsDefault) return;
+    setRenameTarget({ id: contextMenuTarget.id, name: contextMenuTarget.name });
+    setRenameName(contextMenuTarget.name);
+    setRenameError(null);
+    setContextMenu((prev) => ({ ...prev, open: false }));
+  };
+
+  return (
+    <div className="w-80 shrink-0 border-r border-[#323232] bg-[#3c3f41] flex flex-col">
+      <div className="px-4 py-3 border-b border-[#323232]">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm text-[#bbbbbb]">Source Control</h2>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 gap-1.5 text-xs hover:bg-[#4e5254] text-[#afb1b3]"
+            onClick={openCreateDialog}
+          >
+            <Plus className="size-3.5" />
+            <span>Add Changelist</span>
+          </Button>
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className={`h-7 px-2 gap-1.5 text-xs hover:bg-[#4e5254] ${
+                viewMode === "unified" ? "bg-[#4e5254] text-[#bbbbbb]" : "text-[#afb1b3]"
+              }`}
+              onClick={() => onViewModeChange("unified")}
+            >
+              <AlignJustify className="size-3.5" />
+              <span>Unified</span>
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className={`h-7 px-2 gap-1.5 text-xs hover:bg-[#4e5254] ${
+                viewMode === "sideBySide" ? "bg-[#4e5254] text-[#bbbbbb]" : "text-[#afb1b3]"
+              }`}
+              onClick={() => onViewModeChange("sideBySide")}
+            >
+              <SplitSquareHorizontal className="size-3.5" />
+              <span>Side by Side</span>
+            </Button>
+          </div>
+
+          <div className="flex items-center justify-between pt-1">
+            <Label htmlFor="show-hunks" className="text-xs text-[#afb1b3] cursor-pointer">
+              Show Hunks
+            </Label>
+            <Switch
+              id="show-hunks"
+              checked={showHunks}
+              onCheckedChange={onShowHunksChange}
+            />
+          </div>
+        </div>
+      </div>
+
+      <ScrollArea className="flex-1">
+        <div className="p-2">
+          <div className="mb-2">
+            <button
+              onClick={() => toggleSection(STAGED_LIST_ID)}
+              className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-[#4e5254] rounded text-left"
+            >
+              {collapsed.has(STAGED_LIST_ID) ? (
+                <ChevronRight className="size-4 text-[#afb1b3]" />
+              ) : (
+                <ChevronDown className="size-4 text-[#afb1b3]" />
+              )}
+              <span className="text-sm text-[#bbbbbb]">Staged ({stagedFiles.length})</span>
+            </button>
+            {!collapsed.has(STAGED_LIST_ID) && (
+              <div className="mt-1 ml-2">
+                {stagedFiles.length === 0 ? (
+                  <div className="px-2 py-1.5 text-xs text-[#787878]">No files</div>
+                ) : (
+                  stagedFiles.map((file) => {
+                    const icon = getFileIconInfo(file.path);
+                    const { name, dir } = splitPath(file.path);
+                    const isSelected =
+                      selectedFile?.path === file.path && selectedDiffKind === "staged";
+                    return (
+                      <div
+                        key={`staged-${file.path}`}
+                        className="grid grid-cols-[minmax(0,1fr)_20px_20px] items-center gap-1 w-full min-w-0"
+                      >
+                        <button
+                          onClick={() => onFileSelect(file, "staged")}
+                          data-active={isSelected ? "true" : "false"}
+                          data-testid={`file-row-staged:${file.path}`}
+                          className={`flex items-center gap-2 min-w-0 overflow-hidden px-2 py-1.5 rounded text-left hover:bg-[#4e5254] ${
+                            isSelected ? "bg-[#4e5254]" : ""
+                          }`}
+                          title={file.path}
+                        >
+                          <img
+                            className={`size-3.5 shrink-0 ${icon.className}`}
+                            src={icon.url}
+                            alt=""
+                            aria-hidden="true"
+                            loading="lazy"
+                          />
+                          <span
+                            className={`text-xs truncate max-w-28 shrink ${getStatusTextColor(file.status)}`}
+                          >
+                            {name}
+                          </span>
+                          {dir && (
+                            <span
+                              className="text-xs text-[#787878] truncate flex-1 min-w-0"
+                              title={file.path}
+                            >
+                              {dir}
+                            </span>
+                          )}
+                        </button>
+                        <button
+                          className="h-5 w-5 shrink-0 flex items-center justify-center text-[#afb1b3] hover:bg-[#4e5254] rounded disabled:opacity-40"
+                          title="Revert (coming soon)"
+                          disabled
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <Undo2 className="size-3" />
+                        </button>
+                        <button
+                          className="h-5 w-5 shrink-0 flex items-center justify-center text-[#afb1b3] hover:bg-[#4e5254] rounded disabled:opacity-50"
+                          onClick={() => onUnstageFile(file)}
+                          disabled={fileActionBusyPath === file.path}
+                          title="Unstage file"
+                          data-testid={`file-action-unstage:${file.path}`}
+                        >
+                          <Minus className="size-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+          </div>
+
+          {changelistItems.map((list) => {
+            const isActive = list.id === activeChangelistId;
+            const isCollapsed = collapsed.has(list.id);
+            const listFiles = filesByChangelist.get(list.id) ?? [];
+            const count = unstagedCounts.get(list.id) ?? 0;
+
+            return (
+              <div key={list.id} className="mb-2">
+                <div
+                  className="flex items-center gap-2 px-2 py-1.5 hover:bg-[#4e5254] rounded"
+                  data-testid={`changelist-row:${list.id}`}
+                  onContextMenu={(event) => {
+                    event.stopPropagation();
+                    openContextMenu(event, list.id);
+                  }}
+                >
+                  <button onClick={() => toggleSection(list.id)}>
+                    {isCollapsed ? (
+                      <ChevronRight className="size-4 text-[#afb1b3]" />
+                    ) : (
+                      <ChevronDown className="size-4 text-[#afb1b3]" />
+                    )}
+                  </button>
+                  <button
+                    className={`text-sm flex-1 text-left ${
+                      selectedChangelistId === list.id ? "text-[#bbbbbb]" : "text-[#9b9b9b]"
+                    }`}
+                    onClick={() => onSelectedChangelistChange(list.id)}
+                  >
+                    {list.name} ({count})
+                  </button>
+                  {isActive ? (
+                    <span className="text-[10px] text-[#629755]">Active</span>
+                  ) : (
+                    <button
+                      className="text-[10px] text-[#787878] hover:bg-[#4e5254] rounded px-1"
+                      onClick={() => onSetActiveChangelist(list.id)}
+                      disabled={panelBusy}
+                    >
+                      Set Active
+                    </button>
+                  )}
+                </div>
+
+                {!isCollapsed && (
+                  <div className="mt-1 ml-2">
+                    {listFiles.length === 0 ? (
+                      <div className="px-2 py-1.5 text-xs text-[#787878]">No files</div>
+                    ) : (
+                      listFiles.map((file) => {
+                        const icon = getFileIconInfo(file.path);
+                        const { name, dir } = splitPath(file.path);
+                        const isSelected =
+                          selectedFile?.path === file.path && selectedDiffKind === "unstaged";
+                        return (
+                          <div
+                            key={`${list.id}-${file.path}`}
+                            className="grid grid-cols-[minmax(0,1fr)_20px_20px] items-center gap-1 w-full min-w-0"
+                          >
+                            <button
+                              onClick={() => {
+                                onSelectedChangelistChange(list.id);
+                                onFileSelect(file, "unstaged");
+                              }}
+                              data-active={isSelected ? "true" : "false"}
+                              data-testid={`file-row-unstaged:${list.id}:${file.path}`}
+                              className={`flex items-center gap-2 min-w-0 overflow-hidden px-2 py-1.5 rounded text-left hover:bg-[#4e5254] ${
+                                isSelected ? "bg-[#4e5254]" : ""
+                              }`}
+                              title={file.path}
+                            >
+                              <img
+                                className={`size-3.5 shrink-0 ${icon.className}`}
+                                src={icon.url}
+                                alt=""
+                                aria-hidden="true"
+                                loading="lazy"
+                              />
+                              <span
+                                className={`text-xs truncate max-w-28 shrink ${getStatusTextColor(file.status)}`}
+                              >
+                                {name}
+                              </span>
+                              {dir && (
+                                <span
+                                  className="text-xs text-[#787878] truncate flex-1 min-w-0"
+                                  title={file.path}
+                                >
+                                  {dir}
+                                </span>
+                              )}
+                            </button>
+                            <button
+                              className="h-5 w-5 shrink-0 flex items-center justify-center text-[#afb1b3] hover:bg-[#4e5254] rounded disabled:opacity-40"
+                              title="Revert (coming soon)"
+                              disabled
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              <Undo2 className="size-3" />
+                            </button>
+                            <button
+                              className="h-5 w-5 shrink-0 flex items-center justify-center text-[#afb1b3] hover:bg-[#4e5254] rounded disabled:opacity-50"
+                              onClick={() => onStageFile(file)}
+                              disabled={fileActionBusyPath === file.path}
+                              title="Stage file"
+                            >
+                              <Plus className="size-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          <div className="mb-2">
+            <div
+              className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-[#4e5254] rounded text-left"
+              data-testid={`changelist-row:${UNVERSIONED_LIST_ID}`}
+            >
+              <button onClick={() => toggleSection(UNVERSIONED_LIST_ID)}>
+                {collapsed.has(UNVERSIONED_LIST_ID) ? (
+                  <ChevronRight className="size-4 text-[#afb1b3]" />
+                ) : (
+                  <ChevronDown className="size-4 text-[#afb1b3]" />
+                )}
+              </button>
+              <button
+                className={`text-sm flex-1 text-left ${
+                  selectedChangelistId === UNVERSIONED_LIST_ID
+                    ? "text-[#bbbbbb]"
+                    : "text-[#9b9b9b]"
+                }`}
+                onClick={() => onSelectedChangelistChange(UNVERSIONED_LIST_ID)}
+              >
+                {UNVERSIONED_LIST_NAME} ({unversionedFiles.length})
+              </button>
+            </div>
+            {!collapsed.has(UNVERSIONED_LIST_ID) && (
+              <div className="mt-1 ml-2">
+                {unversionedFiles.length === 0 ? (
+                  <div className="px-2 py-1.5 text-xs text-[#787878]">No files</div>
+                ) : (
+                  unversionedFiles.map((file) => {
+                    const icon = getFileIconInfo(file.path);
+                    const { name, dir } = splitPath(file.path);
+                    const isSelected =
+                      selectedFile?.path === file.path && selectedDiffKind === "unstaged";
+                    return (
+                      <div
+                        key={`unversioned-${file.path}`}
+                        className="grid grid-cols-[minmax(0,1fr)_20px_20px] items-center gap-1 w-full min-w-0"
+                      >
+                        <button
+                          onClick={() => {
+                            onSelectedChangelistChange(UNVERSIONED_LIST_ID);
+                            onFileSelect(file, "unstaged");
+                          }}
+                          data-active={isSelected ? "true" : "false"}
+                          data-testid={`file-row-unstaged:${UNVERSIONED_LIST_ID}:${file.path}`}
+                          className={`flex items-center gap-2 min-w-0 overflow-hidden px-2 py-1.5 rounded text-left hover:bg-[#4e5254] ${
+                            isSelected ? "bg-[#4e5254]" : ""
+                          }`}
+                          title={file.path}
+                        >
+                          <img
+                            className={`size-3.5 shrink-0 ${icon.className}`}
+                            src={icon.url}
+                            alt=""
+                            aria-hidden="true"
+                            loading="lazy"
+                          />
+                          <span
+                            className={`text-xs truncate max-w-28 shrink ${getStatusTextColor(file.status)}`}
+                          >
+                            {name}
+                          </span>
+                          {dir && (
+                            <span
+                              className="text-xs text-[#787878] truncate flex-1 min-w-0"
+                              title={file.path}
+                            >
+                              {dir}
+                            </span>
+                          )}
+                        </button>
+                        <button
+                          className="h-5 w-5 shrink-0 flex items-center justify-center text-[#afb1b3] hover:bg-[#4e5254] rounded disabled:opacity-40"
+                          title="Revert (coming soon)"
+                          disabled
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <Undo2 className="size-3" />
+                        </button>
+                        <button
+                          className="h-5 w-5 shrink-0 flex items-center justify-center text-[#afb1b3] hover:bg-[#4e5254] rounded disabled:opacity-50"
+                          onClick={() => onStageFile(file)}
+                          disabled={fileActionBusyPath === file.path}
+                          title="Stage file"
+                          data-testid={`file-action-stage:${UNVERSIONED_LIST_ID}:${file.path}`}
+                        >
+                          <Plus className="size-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </ScrollArea>
+
+      <DropdownMenu
+        open={contextMenu.open}
+        onOpenChange={(open) => {
+          if (!open) {
+            setContextMenu((prev) => ({ ...prev, open: false }));
+          }
+        }}
+      >
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-hidden="true"
+            tabIndex={-1}
+            className="fixed h-0 w-0 opacity-0 pointer-events-none"
+            style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
+          />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          side="right"
+          align="start"
+          className="w-48 bg-[#3c3f41] border-[#323232] text-[#bbbbbb] z-50"
+        >
+          {contextTargetIsRealList && !contextTargetIsActive && (
+            <DropdownMenuItem
+              onSelect={(event) => {
+                event.preventDefault();
+                void handleContextSetActiveChangelist();
+              }}
+              disabled={panelBusy}
+              className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+            >
+              Set active
+            </DropdownMenuItem>
+          )}
+
+          {contextTargetIsRealList && !contextTargetIsDefault && (
+            <DropdownMenuItem
+              onSelect={(event) => {
+                event.preventDefault();
+                handleContextRenameChangelist();
+              }}
+              className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+            >
+              Rename changelist
+            </DropdownMenuItem>
+          )}
+
+          {contextTargetIsRealList && !contextTargetIsDefault && (
+            <DropdownMenuItem
+              onSelect={(event) => {
+                event.preventDefault();
+                handleContextDeleteChangelist();
+              }}
+              className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254] text-[#d6a19f]"
+            >
+              Delete changelist
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <Dialog
+        open={createOpen}
+        onOpenChange={(open) => {
+          setCreateOpen(open);
+          if (!open) {
+            setCreateError(null);
+          }
+        }}
+      >
+        <DialogContent className="bg-[#3c3f41] border-[#323232] text-[#bbbbbb]">
+          <DialogHeader>
+            <DialogTitle>Create Changelist</DialogTitle>
+            <DialogDescription className="text-[#787878]">
+              Name the new changelist.
+            </DialogDescription>
+          </DialogHeader>
+          <input
+            className="w-full h-9 rounded-md border border-[#323232] bg-[#2f3133] px-3 text-sm outline-none"
+            placeholder="UI polish"
+            value={createName}
+            onChange={(event) => {
+              setCreateName(event.target.value);
+              if (createError) setCreateError(null);
+            }}
+          />
+          {createError && <div className="text-xs text-[#c75450]">{createError}</div>}
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              className="text-[#bbbbbb] hover:bg-[#4e5254]"
+              onClick={() => setCreateOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="bg-[#4e5254] hover:bg-[#5a5f63] text-[#bbbbbb]"
+              onClick={confirmCreate}
+              disabled={panelBusy}
+            >
+              Create
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!renameTarget}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRenameTarget(null);
+            setRenameName("");
+            setRenameError(null);
+          }
+        }}
+      >
+        <DialogContent className="bg-[#3c3f41] border-[#323232] text-[#bbbbbb]">
+          <DialogHeader>
+            <DialogTitle>Rename Changelist</DialogTitle>
+            <DialogDescription className="text-[#787878]">
+              Update changelist name.
+            </DialogDescription>
+          </DialogHeader>
+          <input
+            className="w-full h-9 rounded-md border border-[#323232] bg-[#2f3133] px-3 text-sm outline-none"
+            value={renameName}
+            onChange={(event) => {
+              setRenameName(event.target.value);
+              if (renameError) setRenameError(null);
+            }}
+          />
+          {renameError && <div className="text-xs text-[#c75450]">{renameError}</div>}
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              className="text-[#bbbbbb] hover:bg-[#4e5254]"
+              onClick={() => setRenameTarget(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="bg-[#4e5254] hover:bg-[#5a5f63] text-[#bbbbbb]"
+              onClick={confirmRename}
+              disabled={panelBusy}
+            >
+              Rename
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+      >
+        <DialogContent className="bg-[#3c3f41] border-[#323232] text-[#bbbbbb]">
+          <DialogHeader>
+            <DialogTitle>Delete Changelist</DialogTitle>
+            <DialogDescription className="text-[#787878]">
+              Delete changelist "{deleteTarget?.name}"? This cannot be undone. Changes will be
+              moved to "{deleteMoveTargetName}".
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              className="text-[#bbbbbb] hover:bg-[#4e5254]"
+              onClick={() => setDeleteTarget(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="bg-[#6b3d3a] hover:bg-[#7b4542] text-[#f3d3d2]"
+              onClick={confirmDelete}
+              disabled={panelBusy}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

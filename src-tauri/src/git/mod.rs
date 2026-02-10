@@ -8,8 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::os::windows::process::CommandExt;
 
 use git2::{
-    build::CheckoutBuilder, BranchType, DiffFormat, DiffOptions, FetchOptions, ObjectType,
-    RemoteCallbacks, Repository, Status, StatusOptions,
+    build::CheckoutBuilder, BranchType, DiffFormat, DiffOptions, ErrorCode, FetchOptions,
+    IndexEntryExtendedFlag, ObjectType, RemoteCallbacks, Repository, Status, StatusOptions,
 };
 
 use crate::model::{
@@ -380,6 +380,7 @@ pub fn status(summary: &RepoSummary) -> Result<RepoStatus, String> {
         .include_ignored(false);
 
     let statuses = repo.statuses(Some(&mut options)).map_err(|e| e.to_string())?;
+    let index = repo.index().ok();
     let mut files = Vec::new();
     let mut counts = RepoCounts {
         staged: 0,
@@ -394,8 +395,22 @@ pub fn status(summary: &RepoSummary) -> Result<RepoStatus, String> {
             continue;
         }
 
+        let (path, old_path) = extract_paths(&entry);
+        let Some(path) = path else {
+            continue;
+        };
+
         let is_conflicted = status.contains(Status::CONFLICTED);
         let is_untracked = status.contains(Status::WT_NEW) && !status.contains(Status::INDEX_NEW);
+        let is_intent_to_add = status.contains(Status::INDEX_NEW)
+            && index
+                .as_ref()
+                .and_then(|value| value.get_path(Path::new(&path), 0))
+                .map(|entry| {
+                    IndexEntryExtendedFlag::from_bits_truncate(entry.flags_extended)
+                        .is_intent_to_add()
+                })
+                .unwrap_or(false);
         let staged = is_index_change(status);
         let unstaged = is_workdir_change(status);
 
@@ -405,6 +420,9 @@ pub fn status(summary: &RepoSummary) -> Result<RepoStatus, String> {
         } else if is_untracked {
             counts.untracked += 1;
             StatusKind::Untracked
+        } else if is_intent_to_add {
+            counts.unstaged += 1;
+            StatusKind::Unstaged
         } else if staged && unstaged {
             counts.staged += 1;
             counts.unstaged += 1;
@@ -419,17 +437,14 @@ pub fn status(summary: &RepoSummary) -> Result<RepoStatus, String> {
             continue;
         };
 
-        let (path, old_path) = extract_paths(&entry);
-        if let Some(path) = path {
-            files.push(StatusFile {
-                path,
-                status: kind,
-                old_path,
-                changelist_id: None,
-                changelist_name: None,
-                changelist_partial: None,
-            });
-        }
+        files.push(StatusFile {
+            path,
+            status: kind,
+            old_path,
+            changelist_id: None,
+            changelist_name: None,
+            changelist_partial: None,
+        });
     }
 
     Ok(RepoStatus {
@@ -533,23 +548,38 @@ pub fn stage_path(summary: &RepoSummary, path: &str) -> Result<(), String> {
     index.write().map_err(|e| e.to_string())
 }
 
+pub fn track_path(summary: &RepoSummary, path: &str) -> Result<(), String> {
+    run_git(&summary.path, &["add", "-N", "--", path], None).map(|_| ())
+}
+
 pub fn unstage_path(summary: &RepoSummary, path: &str) -> Result<(), String> {
     let repo = Repository::open(&summary.path).map_err(|e| e.to_string())?;
+    let target_path = Path::new(path);
     let head = repo.head().ok();
     if let Some(head) = head {
-        let target = head
-            .peel(ObjectType::Tree)
-            .map_err(|e| e.to_string())?;
-        repo.reset_default(Some(&target), [Path::new(path)])
-            .map_err(|e| e.to_string())?;
+        let commit = head.peel_to_commit().map_err(|e| e.to_string())?;
+        let tree = commit.tree().map_err(|e| e.to_string())?;
+        if tree.get_path(target_path).is_ok() {
+            repo.reset_default(Some(commit.as_object()), [target_path])
+                .map_err(|e| e.to_string())?;
+        } else {
+            let mut index = repo.index().map_err(|e| e.to_string())?;
+            remove_index_path(&mut index, target_path)?;
+        }
     } else {
         let mut index = repo.index().map_err(|e| e.to_string())?;
-        index
-            .remove_path(Path::new(path))
-            .map_err(|e| e.to_string())?;
-        index.write().map_err(|e| e.to_string())?;
+        remove_index_path(&mut index, target_path)?;
     }
     Ok(())
+}
+
+fn remove_index_path(index: &mut git2::Index, path: &Path) -> Result<(), String> {
+    match index.remove_path(path) {
+        Ok(_) => {}
+        Err(error) if error.code() == ErrorCode::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    index.write().map_err(|e| e.to_string())
 }
 
 pub fn list_branches(summary: &RepoSummary) -> Result<BranchList, String> {
@@ -1026,7 +1056,12 @@ fn hash_content(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_diff_hunks, RepoDiffKind};
+    use super::{parse_diff_hunks, stage_path, status, track_path, unstage_path, RepoDiffKind};
+    use crate::model::{RepoSummary, StatusKind};
+    use git2::{Repository, Signature};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn hunk_id_changes_with_content() {
@@ -1056,6 +1091,136 @@ index 1111111..2222222 100644\n\
         let hunks_changed = parse_diff_hunks(diff_changed, "foo.txt", RepoDiffKind::Unstaged);
         assert_eq!(hunks_changed.len(), 1);
         assert_ne!(first_id, hunks_changed[0].id);
+    }
+
+    fn temp_repo_path() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!("gitpanel-git-test-{nanos}"))
+    }
+
+    fn repo_summary(path: &Path) -> RepoSummary {
+        let path_text = path.to_string_lossy().to_string();
+        RepoSummary {
+            repo_id: "test-repo".to_string(),
+            path: path_text.clone(),
+            name: "test".to_string(),
+            repo_root: path_text.clone(),
+            worktree_path: path_text,
+            is_valid: true,
+        }
+    }
+
+    fn init_repo_with_commit() -> (RepoSummary, PathBuf) {
+        let path = temp_repo_path();
+        fs::create_dir_all(&path).expect("create repo root");
+        let repo = Repository::init(&path).expect("init repo");
+
+        fs::write(path.join("tracked.txt"), "line-1\n").expect("write tracked");
+
+        let mut index = repo.index().expect("index");
+        index
+            .add_path(Path::new("tracked.txt"))
+            .expect("stage tracked");
+        index.write().expect("write index");
+
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let sig = Signature::now("gitpanel-test", "test@example.com").expect("signature");
+        repo.commit(Some("HEAD"), &sig, &sig, "initial commit", &tree, &[])
+            .expect("commit");
+
+        (repo_summary(&path), path)
+    }
+
+    #[test]
+    fn unstage_newly_added_file_removes_index_entry() {
+        let (summary, path) = init_repo_with_commit();
+        fs::write(path.join("new.txt"), "new-line\n").expect("write new");
+
+        stage_path(&summary, "new.txt").expect("stage new");
+
+        {
+            let repo = Repository::open(&summary.path).expect("open repo");
+            let index = repo.index().expect("open index");
+            assert!(index.get_path(Path::new("new.txt"), 0).is_some());
+        }
+
+        unstage_path(&summary, "new.txt").expect("unstage new");
+
+        {
+            let repo = Repository::open(&summary.path).expect("open repo");
+            let index = repo.index().expect("open index");
+            assert!(index.get_path(Path::new("new.txt"), 0).is_none());
+        }
+
+        let repo_status = status(&summary).expect("status");
+        let entry = repo_status
+            .files
+            .iter()
+            .find(|file| file.path == "new.txt")
+            .expect("new file in status");
+        assert!(matches!(entry.status, StatusKind::Untracked));
+
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn unstage_tracked_file_keeps_worktree_change() {
+        let (summary, path) = init_repo_with_commit();
+        fs::write(path.join("tracked.txt"), "line-2\n").expect("mutate tracked");
+
+        stage_path(&summary, "tracked.txt").expect("stage tracked");
+        unstage_path(&summary, "tracked.txt").expect("unstage tracked");
+
+        {
+            let repo = Repository::open(&summary.path).expect("open repo");
+            let index = repo.index().expect("open index");
+            let index_entry = index
+                .get_path(Path::new("tracked.txt"), 0)
+                .expect("tracked in index");
+            let head_commit = repo
+                .head()
+                .expect("head")
+                .peel_to_commit()
+                .expect("head commit");
+            let head_tree = head_commit.tree().expect("head tree");
+            let head_entry = head_tree
+                .get_path(Path::new("tracked.txt"))
+                .expect("tracked in head");
+            assert_eq!(index_entry.id, head_entry.id());
+        }
+
+        let repo_status = status(&summary).expect("status");
+        assert_eq!(repo_status.counts.staged, 0);
+        assert!(repo_status
+            .files
+            .iter()
+            .any(|file| file.path == "tracked.txt"));
+
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn track_new_file_marks_it_as_unstaged() {
+        let (summary, path) = init_repo_with_commit();
+        fs::write(path.join("intent.txt"), "intent\n").expect("write intent");
+
+        track_path(&summary, "intent.txt").expect("track file");
+
+        let repo_status = status(&summary).expect("status");
+        let entry = repo_status
+            .files
+            .iter()
+            .find(|file| file.path == "intent.txt")
+            .expect("intent file in status");
+        assert!(matches!(entry.status, StatusKind::Unstaged));
+        assert_eq!(repo_status.counts.staged, 0);
+        assert_eq!(repo_status.counts.untracked, 0);
+
+        let _ = fs::remove_dir_all(path);
     }
 }
 

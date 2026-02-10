@@ -3,3 +3,6 @@
 /.idea/
 /src-tauri/target/
 /public/material-icons/
+/playwright-report/
+/test-results/
+/.playwright-results/

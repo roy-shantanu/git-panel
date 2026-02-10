@@ -1,0 +1,77 @@
+@import './tailwind.css';
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+.refactor-diff-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.refactor-diff-view {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.refactor-diff-view .diff-tailwindcss-wrapper {
+  min-width: 100%;
+}
+
+.refactor-diff-view .diff-view-wrapper {
+  width: 100%;
+  min-width: 100%;
+}
+
+/* Constrain split-view panels to 50% each */
+.refactor-diff-view .split-diff-view.split-diff-view-normal {
+  width: 100%;
+  min-width: 0;
+  flex-basis: auto;
+}
+
+.refactor-diff-view .split-diff-view.split-diff-view-normal .old-diff-table-wrapper,
+.refactor-diff-view .split-diff-view.split-diff-view-normal .new-diff-table-wrapper {
+  flex: 0 0 calc((100% - 1.5px) / 2);
+  width: calc((100% - 1.5px) / 2);
+  max-width: calc((100% - 1.5px) / 2);
+  min-width: 0;
+}
+
+.refactor-diff-view .split-diff-view.split-diff-view-normal .diff-split-line {
+  flex: 0 0 1.5px;
+}
+
+/* Allow both axes so wheel/trackpad input can bubble as expected in diff panes */
+.refactor-diff-view .diff-table-scroll-container {
+  overflow: auto;
+}
+
+/* Monospace font for diff content */
+.refactor-diff-view .diff-line-hunk-content,
+.refactor-diff-view .diff-line-old-content,
+.refactor-diff-view .diff-line-new-content,
+.refactor-diff-view .diff-line-unified-content {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+  font-size: 12px;
+}
+
+.refactor-hide-hunks .diff-line-hunk {
+  display: none;
+}

@@ -29,6 +29,7 @@ fn main() {
             api::wt_remove,
             api::wt_prune,
             api::repo_stage,
+            api::repo_track,
             api::repo_unstage,
             api::repo_branches,
             api::repo_checkout,
