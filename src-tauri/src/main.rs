@@ -36,6 +36,8 @@ fn main() {
             api::repo_checkout,
             api::repo_create_branch,
             api::repo_fetch,
+            api::repo_pull,
+            api::repo_push,
             api::cl_list,
             api::cl_create,
             api::cl_rename,

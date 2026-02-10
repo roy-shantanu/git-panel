@@ -334,6 +334,10 @@ export function installE2ETauriMocks() {
         }
         case "repo_fetch":
           return { remote: "origin", updated: false };
+        case "repo_pull":
+          return { remote: "origin", updated: true };
+        case "repo_push":
+          return { remote: "origin", updated: true };
         case "repo_checkout":
           return { head: runtime.status.head };
         case "repo_stage": {

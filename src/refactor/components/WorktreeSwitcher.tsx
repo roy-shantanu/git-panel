@@ -16,12 +16,16 @@ interface WorktreeSwitcherProps {
   repoBusy: boolean;
   worktreeBusy: boolean;
   fetchBusy: boolean;
+  pullBusy: boolean;
+  pushBusy: boolean;
   commitBusy: boolean;
   commitDisabled: boolean;
   onOpenRepo: () => void;
   onSelectRecentRepo: (path: string) => void;
   onSelectWorktree: (path: string) => void;
   onFetch: () => void;
+  onPull: () => void;
+  onPush: () => void;
   onCommitClick: () => void;
 }
 
@@ -45,14 +49,20 @@ export function WorktreeSwitcher({
   repoBusy,
   worktreeBusy,
   fetchBusy,
+  pullBusy,
+  pushBusy,
   commitBusy,
   commitDisabled,
   onOpenRepo,
   onSelectRecentRepo,
   onSelectWorktree,
   onFetch,
+  onPull,
+  onPush,
   onCommitClick
 }: WorktreeSwitcherProps) {
+  const syncBusy = fetchBusy || pullBusy || pushBusy;
+
   return (
     <div className="flex items-center justify-between px-4 py-2 border-b border-[#323232] bg-[#3c3f41]">
       {/* Left side - Repository and Worktree selectors */}
@@ -163,7 +173,7 @@ export function WorktreeSwitcher({
           size="icon"
           className={`size-8 hover:bg-[#4e5254] text-[#afb1b3] ${fetchBusy ? "animate-spin" : ""}`}
           title="Git Fetch"
-          disabled={!repo || fetchBusy}
+          disabled={!repo || syncBusy}
           onClick={onFetch}
         >
           <RefreshCw className="size-4" />
@@ -172,9 +182,10 @@ export function WorktreeSwitcher({
         <Button
           variant="ghost"
           size="icon"
-          className="size-8 hover:bg-[#4e5254] text-[#afb1b3]"
+          className={`size-8 hover:bg-[#4e5254] text-[#afb1b3] ${pullBusy ? "animate-spin" : ""}`}
           title="Git Pull"
-          disabled
+          disabled={!repo || syncBusy}
+          onClick={onPull}
         >
           <Download className="size-4" />
         </Button>
@@ -182,9 +193,10 @@ export function WorktreeSwitcher({
         <Button
           variant="ghost"
           size="icon"
-          className="size-8 hover:bg-[#4e5254] text-[#afb1b3]"
+          className={`size-8 hover:bg-[#4e5254] text-[#afb1b3] ${pushBusy ? "animate-spin" : ""}`}
           title="Git Push"
-          disabled
+          disabled={!repo || syncBusy}
+          onClick={onPush}
         >
           <Upload className="size-4" />
         </Button>

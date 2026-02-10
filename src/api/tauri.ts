@@ -115,6 +115,20 @@ export async function repoFetch(
   return invoke("repo_fetch", { req: { repo_id, remote } });
 }
 
+export async function repoPull(
+  repo_id: string,
+  remote?: string
+): Promise<FetchResult> {
+  return invoke("repo_pull", { req: { repo_id, remote } });
+}
+
+export async function repoPush(
+  repo_id: string,
+  remote?: string
+): Promise<FetchResult> {
+  return invoke("repo_push", { req: { repo_id, remote } });
+}
+
 export async function clList(repo_id: string): Promise<ChangelistState> {
   return invoke("cl_list", { req: { repo_id } });
 }

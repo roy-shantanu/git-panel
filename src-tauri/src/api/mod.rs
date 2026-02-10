@@ -468,6 +468,60 @@ pub async fn repo_fetch(
 }
 
 #[tauri::command]
+pub async fn repo_pull(
+    req: RepoFetchRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<crate::model::FetchResult, String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    let remote_arg = req.remote.clone();
+    let remote = remote_arg
+        .clone()
+        .unwrap_or_else(|| "tracking branch".to_string());
+    let summary_for_job = summary.clone();
+    let updated = tauri::async_runtime::spawn_blocking(move || {
+        git::pull(&summary_for_job, remote_arg.as_deref())
+    })
+    .await
+    .map_err(|_| "pull job failed".to_string())??;
+
+    if let Err(error) = refresh_cached_status(&summary, &state) {
+        tracing::warn!(
+            repo_id = %summary.repo_id,
+            error = %error,
+            "failed to refresh cached status after pull"
+        );
+    }
+    Ok(crate::model::FetchResult { remote, updated })
+}
+
+#[tauri::command]
+pub async fn repo_push(
+    req: RepoFetchRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<crate::model::FetchResult, String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    let remote_arg = req.remote.clone();
+    let remote = remote_arg
+        .clone()
+        .unwrap_or_else(|| "tracking branch".to_string());
+    let summary_for_job = summary.clone();
+    let updated = tauri::async_runtime::spawn_blocking(move || {
+        git::push(&summary_for_job, remote_arg.as_deref())
+    })
+    .await
+    .map_err(|_| "push job failed".to_string())??;
+    Ok(crate::model::FetchResult { remote, updated })
+}
+
+#[tauri::command]
 pub async fn cl_list(
     req: RepoStatusRequest,
     state: State<'_, Mutex<AppState>>,

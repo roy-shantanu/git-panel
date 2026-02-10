@@ -43,6 +43,8 @@ import {
   repoListRecent,
   repoOpen,
   repoOpenWorktree,
+  repoPull,
+  repoPush,
   repoDiffPayload,
   repoStage,
   repoTrack,
@@ -86,6 +88,15 @@ const splitPath = (path: string) => {
   return { name, dir };
 };
 
+const toErrorMessage = (error: unknown, fallback: string) => {
+  if (typeof error === "string" && error.trim()) return error;
+  if (error && typeof error === "object" && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message;
+  }
+  return fallback;
+};
+
 const uniquePaths = (paths: string[]) => {
   const next = new Set<string>();
   const ordered: string[] = [];
@@ -107,6 +118,8 @@ export default function App() {
   const [worktreeBusy, setWorktreeBusy] = useState(false);
   const [branchBusy, setBranchBusy] = useState(false);
   const [fetchBusy, setFetchBusy] = useState(false);
+  const [pullBusy, setPullBusy] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
   const [watcherBusy, setWatcherBusy] = useState(false);
   const [watcherStatus, setWatcherStatus] = useState<WatcherStatus>("offline");
   const [watcherChannelReady, setWatcherChannelReady] = useState(false);
@@ -153,6 +166,8 @@ export default function App() {
       setCommitSelection(new Set());
       setCommitBusy(false);
       setCommitError(null);
+      setPullBusy(false);
+      setPushBusy(false);
       return;
     }
 
@@ -446,13 +461,63 @@ export default function App() {
     if (!repo?.repo_id) return;
     try {
       setFetchBusy(true);
-      await repoFetch(repo.repo_id);
+      const result = await repoFetch(repo.repo_id);
       const nextBranches = await repoBranches(repo.repo_id);
       setBranches(nextBranches);
+      showToast(
+        "success",
+        "Fetch completed",
+        result.updated
+          ? `Fetched updates from ${result.remote}.`
+          : `No updates found on ${result.remote}.`
+      );
     } catch (error) {
       console.error("repo_fetch failed", error);
+      showToast("error", "Fetch failed", toErrorMessage(error, "Fetch failed."));
     } finally {
       setFetchBusy(false);
+    }
+  };
+
+  const handlePull = async () => {
+    if (!repo?.repo_id) return;
+    try {
+      setPullBusy(true);
+      const result = await repoPull(repo.repo_id);
+      await Promise.all([refreshRepoData(repo.repo_id), repoBranches(repo.repo_id).then(setBranches)]);
+      showToast(
+        "success",
+        "Pull completed",
+        result.updated
+          ? `Pulled latest changes from ${result.remote}.`
+          : `Already up to date with ${result.remote}.`
+      );
+    } catch (error) {
+      console.error("repo_pull failed", error);
+      showToast("error", "Pull failed", toErrorMessage(error, "Pull failed."));
+    } finally {
+      setPullBusy(false);
+    }
+  };
+
+  const handlePush = async () => {
+    if (!repo?.repo_id) return;
+    try {
+      setPushBusy(true);
+      const result = await repoPush(repo.repo_id);
+      await Promise.all([refreshRepoData(repo.repo_id), repoBranches(repo.repo_id).then(setBranches)]);
+      showToast(
+        "success",
+        "Push completed",
+        result.updated
+          ? `Pushed local commits to ${result.remote}.`
+          : `Nothing to push to ${result.remote}.`
+      );
+    } catch (error) {
+      console.error("repo_push failed", error);
+      showToast("error", "Push failed", toErrorMessage(error, "Push failed."));
+    } finally {
+      setPushBusy(false);
     }
   };
 
@@ -780,12 +845,16 @@ export default function App() {
               repoBusy={repoBusy}
               worktreeBusy={worktreeBusy}
               fetchBusy={fetchBusy}
+              pullBusy={pullBusy}
+              pushBusy={pushBusy}
               commitBusy={commitBusy}
               commitDisabled={!repo || stagedFiles.length === 0}
               onOpenRepo={handleOpenRepoPicker}
               onSelectRecentRepo={handleSelectRecentRepo}
               onSelectWorktree={handleSelectWorktree}
               onFetch={handleFetch}
+              onPull={handlePull}
+              onPush={handlePush}
               onCommitClick={openCommitDialog}
             />
 

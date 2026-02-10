@@ -870,6 +870,53 @@ pub fn fetch(summary: &RepoSummary, remote: Option<&str>) -> Result<bool, String
     Ok(true)
 }
 
+fn head_oid(repo_path: &str) -> Option<String> {
+    run_git(repo_path, &["rev-parse", "--verify", "HEAD"], None)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn upstream_ahead_count(repo_path: &str) -> Option<u32> {
+    run_git(
+        repo_path,
+        &["rev-list", "--count", "@{upstream}..HEAD"],
+        None,
+    )
+    .ok()
+    .and_then(|value| value.trim().parse::<u32>().ok())
+}
+
+pub fn pull(summary: &RepoSummary, remote: Option<&str>) -> Result<bool, String> {
+    let before_head = head_oid(&summary.path);
+
+    let mut args: Vec<&str> = vec!["pull"];
+    if let Some(remote_name) = remote.map(str::trim).filter(|value| !value.is_empty()) {
+        args.push(remote_name);
+    }
+    run_git(&summary.path, &args, None)?;
+
+    let after_head = head_oid(&summary.path);
+    Ok(before_head != after_head)
+}
+
+pub fn push(summary: &RepoSummary, remote: Option<&str>) -> Result<bool, String> {
+    let ahead_before = upstream_ahead_count(&summary.path);
+
+    let mut args: Vec<&str> = vec!["push"];
+    if let Some(remote_name) = remote.map(str::trim).filter(|value| !value.is_empty()) {
+        args.push(remote_name);
+    }
+    run_git(&summary.path, &args, None)?;
+
+    let ahead_after = upstream_ahead_count(&summary.path);
+    Ok(match (ahead_before, ahead_after) {
+        (Some(before), Some(after)) => after < before,
+        (Some(before), None) => before > 0,
+        _ => true,
+    })
+}
+
 pub fn list_worktrees(repo_root: &str) -> Result<WorktreeList, String> {
     let output = run_git(repo_root, &["worktree", "list", "--porcelain"], None)?;
     let mut worktrees = Vec::new();
