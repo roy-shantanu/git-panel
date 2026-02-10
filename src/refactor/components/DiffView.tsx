@@ -198,7 +198,7 @@ export function DiffView({
     error || (payloadMeta.mode === "render" ? diffParseError : null);
 
   return (
-    <div className="flex-1 min-w-0 min-h-0 overflow-hidden bg-[#2b2b2b] flex flex-col">
+    <div className="h-full min-w-0 min-h-0 flex flex-col bg-[#2b2b2b] overflow-hidden">
       <div className="shrink-0 border-b border-[#323232] px-6 py-4 bg-[#3c3f41]">
         <div className="flex items-center gap-3 mb-2 min-w-0">
           <FileCode className="size-5 text-[#afb1b3]" />
@@ -234,14 +234,16 @@ export function DiffView({
           <div className="text-xs text-[#787878] p-3">No diff to display.</div>
         )}
         {!isBusy && !visibleError && payloadMeta.mode === "render" && diffFile && (
-          <GitDiffView
-            diffFile={diffFile}
-            diffViewMode={diffMode}
-            diffViewTheme="dark"
-            diffViewWrap={false}
-            diffViewHighlight={false}
-            className={showHunks ? "refactor-diff-view" : "refactor-diff-view refactor-hide-hunks"}
-          />
+          <div className="refactor-diff-view">
+            <GitDiffView
+              diffFile={diffFile}
+              diffViewMode={diffMode}
+              diffViewTheme="dark"
+              diffViewWrap={false}
+              diffViewHighlight={false}
+              className={showHunks ? "" : "refactor-hide-hunks"}
+            />
+          </div>
         )}
       </div>
     </div>

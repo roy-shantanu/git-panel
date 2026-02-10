@@ -13,41 +13,56 @@ body {
 }
 
 .refactor-diff-shell {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
-  overscroll-behavior: contain;
 }
 
 .refactor-diff-view {
-  height: 100%;
+  flex: 1;
   min-height: 0;
-  width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
-.refactor-diff-view .diff-tailwindcss-wrapper,
-.refactor-diff-view .diff-style-root,
+.refactor-diff-view .diff-tailwindcss-wrapper {
+  min-width: 100%;
+}
+
 .refactor-diff-view .diff-view-wrapper {
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
+  width: 100%;
+  min-width: 100%;
 }
 
-.refactor-diff-view .unified-diff-view,
-.refactor-diff-view .split-diff-view {
-  height: 100%;
-  min-height: 0;
+/* Constrain split-view panels to 50% each */
+.refactor-diff-view .split-diff-view.split-diff-view-normal {
+  width: 100%;
+  min-width: 0;
+  flex-basis: auto;
 }
 
+.refactor-diff-view .split-diff-view.split-diff-view-normal .old-diff-table-wrapper,
+.refactor-diff-view .split-diff-view.split-diff-view-normal .new-diff-table-wrapper {
+  flex: 0 0 calc((100% - 1.5px) / 2);
+  width: calc((100% - 1.5px) / 2);
+  max-width: calc((100% - 1.5px) / 2);
+  min-width: 0;
+}
+
+.refactor-diff-view .split-diff-view.split-diff-view-normal .diff-split-line {
+  flex: 0 0 1.5px;
+}
+
+/* Allow both axes so wheel/trackpad input can bubble as expected in diff panes */
 .refactor-diff-view .diff-table-scroll-container {
-  max-height: 100%;
-  min-height: 0;
-  overflow-x: auto;
-  overflow-y: auto !important;
-  overscroll-behavior: contain;
+  overflow: auto;
 }
 
+/* Monospace font for diff content */
 .refactor-diff-view .diff-line-hunk-content,
 .refactor-diff-view .diff-line-old-content,
 .refactor-diff-view .diff-line-new-content,

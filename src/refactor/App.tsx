@@ -99,20 +99,32 @@ export default function App() {
 
     let cancelled = false;
     let dispose: (() => void) | null = null;
+    let inFlight = false;
+    let queued = false;
 
     const refresh = async () => {
+      if (inFlight) {
+        queued = true;
+        return;
+      }
+      inFlight = true;
       try {
-        const [nextStatus, nextChangelists] = await Promise.all([
-          repoStatus(repo.repo_id),
-          clList(repo.repo_id)
-        ]);
-        if (cancelled) return;
-        setStatus(nextStatus);
-        setChangelists(nextChangelists);
-        setWatcherStatus("active");
+        do {
+          queued = false;
+          const [nextStatus, nextChangelists] = await Promise.all([
+            repoStatus(repo.repo_id),
+            clList(repo.repo_id)
+          ]);
+          if (cancelled) return;
+          setStatus(nextStatus);
+          setChangelists(nextChangelists);
+          setWatcherStatus("active");
+        } while (queued && !cancelled);
       } catch (error) {
         console.error("repo_changed refresh failed", error);
         if (!cancelled) setWatcherStatus("degraded");
+      } finally {
+        inFlight = false;
       }
     };
 
@@ -148,11 +160,11 @@ export default function App() {
   }, [repo?.repo_id, setStatus]);
 
   useEffect(() => {
-    if (!repo?.repo_id) return;
+    if (!repo?.repo_id || watcherChannelReady) return;
 
     let cancelled = false;
     let inFlight = false;
-    const intervalMs = 2500;
+    const intervalMs = 5000;
 
     const refresh = async () => {
       if (inFlight) return;
@@ -165,7 +177,7 @@ export default function App() {
         if (!cancelled) {
           setStatus(nextStatus);
           setChangelists(nextChangelists);
-          setWatcherStatus(watcherChannelReady ? "active" : "degraded");
+          setWatcherStatus("degraded");
         }
       } catch (error) {
         console.error("repo polling refresh failed", error);
@@ -496,7 +508,7 @@ export default function App() {
 
             {/* Center - Diff View */}
             {selectedFile ? (
-              <div className="flex-1 min-w-0 min-h-0 overflow-hidden">
+              <div className="flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
                 <DiffView
                   fileName={selectedFile.path}
                   payload={selectedDiffPayload}

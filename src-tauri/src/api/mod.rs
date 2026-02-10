@@ -17,7 +17,7 @@ use crate::model::{
 use crate::store::{now_ms, AppState};
 use std::time::Instant;
 
-const STATUS_TTL_MS: u64 = 500;
+const STATUS_TTL_MS: u64 = 1500;
 
 #[tauri::command]
 pub async fn repo_open(

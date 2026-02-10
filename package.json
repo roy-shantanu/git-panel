@@ -10,6 +10,8 @@
     "lint": "eslint src --max-warnings 0",
     "postinstall": "node scripts/copy-material-icons.mjs",
     "preview": "vite preview",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit"
   },
@@ -43,6 +45,7 @@
     "@types/react": "^18.2.66",
     "@types/react-dom": "^18.2.22",
     "@vitejs/plugin-react": "^4.2.1",
+    "@playwright/test": "^1.56.1",
     "eslint": "^9.39.2",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.0",
