@@ -103,9 +103,31 @@ export default function App() {
       return;
     }
 
-    repoStatus(repo.repo_id).then(setStatus).catch(console.error);
-    repoBranches(repo.repo_id).then(setBranches).catch(console.error);
-    clList(repo.repo_id).then(setChangelists).catch(console.error);
+    const repoId = repo.repo_id;
+    let cancelled = false;
+
+    const loadRepoData = async () => {
+      try {
+        const [nextStatus, nextBranches, nextChangelists] = await Promise.all([
+          repoStatus(repoId),
+          repoBranches(repoId),
+          clList(repoId)
+        ]);
+
+        if (cancelled) return;
+        setStatus(nextStatus);
+        setBranches(nextBranches);
+        setChangelists(nextChangelists);
+      } catch (error) {
+        if (!cancelled) console.error("initial repo load failed", error);
+      }
+    };
+
+    loadRepoData();
+
+    return () => {
+      cancelled = true;
+    };
   }, [repo?.repo_id, setStatus]);
 
   useEffect(() => {
