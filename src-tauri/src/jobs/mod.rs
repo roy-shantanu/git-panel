@@ -24,7 +24,8 @@ impl JobQueue {
     pub fn start_status(&mut self, repo_id: &RepoId) -> u64 {
         self.next_token = self.next_token.wrapping_add(1);
         let token = self.next_token;
-        self.current.insert((repo_id.clone(), JobKind::Status), token);
+        self.current
+            .insert((repo_id.clone(), JobKind::Status), token);
         token
     }
 

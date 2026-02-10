@@ -5,14 +5,14 @@ use tauri::{AppHandle, State};
 use crate::changelist;
 use crate::git;
 use crate::model::{
-    AppVersion, BranchCreateResult, BranchList, CheckoutResult, RepoBranchListRequest,
-    RepoCheckoutRequest, RepoCreateBranchRequest, RepoDiffRequest, RepoFetchRequest, RepoOpenRequest,
-    Changelist, ChangelistAssignHunksRequest, ChangelistAssignRequest, ChangelistCreateRequest,
-    ChangelistIdRequest, ChangelistRenameRequest, ChangelistState, ChangelistUnassignHunksRequest,
-    ChangelistUnassignRequest, CommitExecuteRequest, CommitPreview, CommitPrepareRequest,
-    CommitResult, DiffHunk, HunkAssignment, RepoDiffPayload, RepoOpenWorktreeRequest, RepoPathRequest,
-    RepoStatusRequest, RepoSummary, UnifiedDiffText, WorktreeAddRequest, WorktreeList,
-    WorktreePathRequest, WorktreeResult,
+    AppVersion, BranchCreateResult, BranchList, Changelist, ChangelistAssignHunksRequest,
+    ChangelistAssignRequest, ChangelistCreateRequest, ChangelistIdRequest, ChangelistRenameRequest,
+    ChangelistState, ChangelistUnassignHunksRequest, ChangelistUnassignRequest, CheckoutResult,
+    CommitExecuteRequest, CommitPrepareRequest, CommitPreview, CommitResult, CommitStagedRequest,
+    DiffHunk, HunkAssignment, RepoBranchListRequest, RepoCheckoutRequest, RepoCreateBranchRequest,
+    RepoDiffPayload, RepoDiffRequest, RepoFetchRequest, RepoOpenRequest, RepoOpenWorktreeRequest,
+    RepoPathRequest, RepoStatusRequest, RepoSummary, UnifiedDiffText, WorktreeAddRequest,
+    WorktreeList, WorktreePathRequest, WorktreeResult,
 };
 use crate::store::{now_ms, AppState};
 use std::time::Instant;
@@ -28,9 +28,11 @@ pub async fn repo_open(
     let summary = git::open_repo(&req.path);
     let mut guard = state.lock().map_err(|_| "state lock failed".to_string())?;
     if summary.is_valid {
-        if let Ok(watcher) =
-            crate::watch::RepoWatcher::new(app, summary.repo_id.clone(), summary.worktree_path.clone())
-        {
+        if let Ok(watcher) = crate::watch::RepoWatcher::new(
+            app,
+            summary.repo_id.clone(),
+            summary.worktree_path.clone(),
+        ) {
             guard.upsert_watcher(&summary.repo_id, watcher);
         }
     }
@@ -49,9 +51,11 @@ pub async fn repo_open_worktree(
     summary.repo_id = git::repo_id_for_path(&summary.worktree_path);
     let mut guard = state.lock().map_err(|_| "state lock failed".to_string())?;
     if summary.is_valid {
-        if let Ok(watcher) =
-            crate::watch::RepoWatcher::new(app, summary.repo_id.clone(), summary.worktree_path.clone())
-        {
+        if let Ok(watcher) = crate::watch::RepoWatcher::new(
+            app,
+            summary.repo_id.clone(),
+            summary.worktree_path.clone(),
+        ) {
             guard.upsert_watcher(&summary.repo_id, watcher);
         }
     }
@@ -101,7 +105,10 @@ pub async fn repo_status(
     }
 
     let mut guard = state.lock().map_err(|_| "state lock failed".to_string())?;
-    if guard.job_queue.is_current(&req.repo_id, crate::jobs::JobKind::Status, token) {
+    if guard
+        .job_queue
+        .is_current(&req.repo_id, crate::jobs::JobKind::Status, token)
+    {
         guard.set_status(status.clone());
         Ok(status)
     } else if let Some(cache) = guard.get_status(&req.repo_id) {
@@ -198,25 +205,25 @@ pub async fn repo_diff_hunks(
     if let Some(key) = cache_key.as_ref() {
         if let Ok(guard) = state.lock() {
             if let Some(cached) = guard.get_diff_cache(key) {
-                let all_hunks = git::diff_hunks_from_text(
-                    &cached.text,
-                    &path,
-                    kind.clone(),
-                );
+                let all_hunks = git::diff_hunks_from_text(&cached.text, &path, kind.clone());
                 let filtered = filter_hunks_for_path(all_hunks.clone(), &path);
-                return Ok(if filtered.is_empty() { all_hunks } else { filtered });
+                return Ok(if filtered.is_empty() {
+                    all_hunks
+                } else {
+                    filtered
+                });
             }
         }
     }
 
     let diff = repo_diff(req, state).await?;
-    let all_hunks = git::diff_hunks_from_text(
-        &diff.text,
-        &path,
-        kind,
-    );
+    let all_hunks = git::diff_hunks_from_text(&diff.text, &path, kind);
     let filtered = filter_hunks_for_path(all_hunks.clone(), &path);
-    Ok(if filtered.is_empty() { all_hunks } else { filtered })
+    Ok(if filtered.is_empty() {
+        all_hunks
+    } else {
+        filtered
+    })
 }
 
 #[tauri::command]
@@ -230,7 +237,11 @@ pub async fn repo_diff_payload(
     let diff = repo_diff(req, state).await?;
     let all_hunks = git::diff_hunks_from_text(&diff.text, &path, kind);
     let filtered = filter_hunks_for_path(all_hunks.clone(), &path);
-    let hunks = if filtered.is_empty() { all_hunks } else { filtered };
+    let hunks = if filtered.is_empty() {
+        all_hunks
+    } else {
+        filtered
+    };
     tracing::info!(
         path = %path,
         hunks = hunks.len(),
@@ -341,6 +352,41 @@ pub async fn repo_unstage(
 }
 
 #[tauri::command]
+pub async fn repo_delete_unversioned(
+    req: RepoPathRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    let path = req.path.trim().to_string();
+    if path.is_empty() {
+        return Err("path is required".to_string());
+    }
+
+    let status = git::status(&summary)?;
+    let is_unversioned = status.files.iter().any(|file| {
+        file.path == path && matches!(file.status, crate::model::StatusKind::Untracked)
+    });
+    if !is_unversioned {
+        return Err("Only unversioned files can be deleted.".to_string());
+    }
+
+    git::delete_unversioned_path(&summary, &path)?;
+    changelist::clear_assignments(&summary, &[path])?;
+    if let Err(error) = refresh_cached_status(&summary, &state) {
+        tracing::warn!(
+            repo_id = %summary.repo_id,
+            error = %error,
+            "failed to refresh cached status after deleting unversioned file"
+        );
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn repo_branches(
     req: RepoBranchListRequest,
     state: State<'_, Mutex<AppState>>,
@@ -374,10 +420,10 @@ pub async fn repo_checkout(
     let result = tauri::async_runtime::spawn_blocking(move || {
         git::checkout_branch(&summary_for_job, &req.target)
     })
-        .await
-        .map_err(|_| crate::model::RepoError::GitError {
-            message: "checkout job failed".to_string(),
-        })??;
+    .await
+    .map_err(|_| crate::model::RepoError::GitError {
+        message: "checkout job failed".to_string(),
+    })??;
 
     // Update cached status after checkout so UI refreshes quickly.
     if let Ok(mut status) = git::status(&summary) {
@@ -627,6 +673,115 @@ pub async fn commit_execute(
     Ok(result)
 }
 
+#[tauri::command]
+pub async fn commit_staged(
+    req: CommitStagedRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<CommitResult, String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+
+    let status = git::status(&summary)?;
+    let staged_files: Vec<_> = status
+        .files
+        .into_iter()
+        .filter(|file| {
+            matches!(
+                file.status,
+                crate::model::StatusKind::Staged | crate::model::StatusKind::Both
+            )
+        })
+        .collect();
+    let staged_paths: std::collections::HashSet<String> =
+        staged_files.iter().map(|file| file.path.clone()).collect();
+    let staged_old_paths: std::collections::HashMap<String, String> = staged_files
+        .iter()
+        .filter_map(|file| {
+            file.old_path
+                .as_ref()
+                .map(|old_path| (file.path.clone(), old_path.clone()))
+        })
+        .collect();
+
+    let mut selected_paths = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for raw_path in req.paths {
+        let path = raw_path.trim();
+        if path.is_empty() {
+            continue;
+        }
+        if seen.insert(path.to_string()) {
+            selected_paths.push(path.to_string());
+        }
+    }
+
+    if selected_paths.is_empty() {
+        return Err("Select at least one staged file to commit.".to_string());
+    }
+
+    let not_staged: Vec<String> = selected_paths
+        .iter()
+        .filter(|path| !staged_paths.contains(*path))
+        .cloned()
+        .collect();
+    if !not_staged.is_empty() {
+        if not_staged.len() == 1 {
+            return Err(format!(
+                "Selected file is no longer staged: {}",
+                not_staged[0]
+            ));
+        }
+        return Err("Some selected files are no longer staged. Refresh and try again.".to_string());
+    }
+
+    let mut paths_for_job = selected_paths.clone();
+    for path in &selected_paths {
+        if let Some(old_path) = staged_old_paths.get(path) {
+            if !paths_for_job.contains(old_path) {
+                paths_for_job.push(old_path.clone());
+            }
+        }
+    }
+
+    let options = req.options;
+    let message = req.message.clone();
+    let summary_for_job = summary.clone();
+    let mut result = tauri::async_runtime::spawn_blocking(move || {
+        git::commit_staged_paths(&summary_for_job, &paths_for_job, &message, &options)
+    })
+    .await
+    .map_err(|_| "commit job failed".to_string())??;
+    result.committed_paths = selected_paths.clone();
+
+    let mut next_status = git::status(&summary)?;
+    if let Ok(mut cl_state) = changelist::load_state(&summary) {
+        let _ = changelist::apply_to_status(&summary, &mut cl_state, &mut next_status);
+    }
+
+    let dirty_paths: std::collections::HashSet<String> = next_status
+        .files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect();
+    let clean_paths: Vec<String> = result
+        .committed_paths
+        .iter()
+        .filter(|path| !dirty_paths.contains(*path))
+        .cloned()
+        .collect();
+    changelist::clear_assignments(&summary, &clean_paths)?;
+
+    if let Ok(mut guard) = state.lock() {
+        guard.set_status(next_status);
+    }
+    update_cached_changelists(&summary, &state)?;
+
+    Ok(result)
+}
+
 fn update_cached_changelists(
     summary: &RepoSummary,
     state: &State<'_, Mutex<AppState>>,
@@ -678,7 +833,13 @@ fn build_commit_preview(
         .filter(|(_, assignment)| assignment.changelist_id == changelist_id)
         .map(|(path, _)| path.clone())
         .collect::<Vec<_>>();
-    preview_from_files(summary, changelist_id, files, hunk_files, &cl_state.hunk_assignments)
+    preview_from_files(
+        summary,
+        changelist_id,
+        files,
+        hunk_files,
+        &cl_state.hunk_assignments,
+    )
 }
 
 fn preview_from_files(
@@ -691,7 +852,10 @@ fn preview_from_files(
     if files.is_empty() && hunk_files.is_empty() {
         return Err("Changelist has no files.".to_string());
     }
-    if files.iter().any(|file| matches!(file.status, crate::model::StatusKind::Conflicted)) {
+    if files
+        .iter()
+        .any(|file| matches!(file.status, crate::model::StatusKind::Conflicted))
+    {
         return Err("Changelist contains conflicted files.".to_string());
     }
 

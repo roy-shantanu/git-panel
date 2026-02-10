@@ -45,7 +45,10 @@ impl RepoWatcher {
                 .map_err(|e| e.to_string())?;
         }
         watcher
-            .watch(std::path::Path::new(&worktree_path), RecursiveMode::Recursive)
+            .watch(
+                std::path::Path::new(&worktree_path),
+                RecursiveMode::Recursive,
+            )
             .map_err(|e| e.to_string())?;
 
         let stop = Arc::new(AtomicBool::new(false));

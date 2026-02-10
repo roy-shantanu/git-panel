@@ -205,6 +205,13 @@ export interface CommitExecuteRequest {
   options?: CommitOptions;
 }
 
+export interface CommitStagedRequest {
+  repo_id: RepoId;
+  message: string;
+  paths: string[];
+  options?: CommitOptions;
+}
+
 export interface CommitPreview {
   changelist_id: string;
   files: StatusFile[];

@@ -209,9 +209,7 @@ pub fn apply_to_status(
         if assigned.is_none() {
             if let Some(old) = file.old_path.as_ref() {
                 if let Some(old_hunks) = state.hunk_assignments.remove(old) {
-                    state
-                        .hunk_assignments
-                        .insert(file.path.clone(), old_hunks);
+                    state.hunk_assignments.insert(file.path.clone(), old_hunks);
                     rename_applied = true;
                 }
             }
@@ -326,15 +324,11 @@ mod tests {
         let (summary, path) = temp_repo();
 
         let created = create(&summary, "Feature").expect("create changelist");
-        assign_files(&summary, &created.id, &["src/main.rs".to_string()])
-            .expect("assign file");
+        assign_files(&summary, &created.id, &["src/main.rs".to_string()]).expect("assign file");
 
         let state = load_state(&summary).expect("load state");
         assert!(state.lists.iter().any(|item| item.id == created.id));
-        assert_eq!(
-            state.assignments.get("src/main.rs"),
-            Some(&created.id)
-        );
+        assert_eq!(state.assignments.get("src/main.rs"), Some(&created.id));
 
         let _ = fs::remove_dir_all(path);
     }

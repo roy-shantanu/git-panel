@@ -49,6 +49,12 @@ const nextStatusAfterTrack = (status: StatusFile["status"]): StatusFile["status"
   return status;
 };
 
+const nextStatusAfterCommit = (status: StatusFile["status"]): StatusFile["status"] | null => {
+  if (status === "staged") return null;
+  if (status === "both") return "unstaged";
+  return status;
+};
+
 const computeCounts = (files: StatusFile[]) => {
   let staged = 0;
   let unstaged = 0;
@@ -259,6 +265,29 @@ const updateFileStatus = (
   syncStatusFromChangelists(state);
 };
 
+const applyCommitToPaths = (state: MockState, paths: string[]) => {
+  if (paths.length === 0) return;
+
+  state.status.files = state.status.files
+    .map((file) => {
+      if (!paths.includes(file.path)) return file;
+      const next = nextStatusAfterCommit(file.status);
+      if (next === null) return null;
+      return { ...file, status: next };
+    })
+    .filter((file): file is StatusFile => file !== null);
+
+  for (const path of paths) {
+    const stillDirty = state.status.files.some((file) => file.path === path);
+    if (!stillDirty) {
+      delete state.changelists.assignments[path];
+      delete state.changelists.hunk_assignments[path];
+    }
+  }
+
+  syncStatusFromChangelists(state);
+};
+
 export function installE2ETauriMocks() {
   let runtime = createMockState();
   let nextChangelistSeed = 1;
@@ -327,6 +356,46 @@ export function installE2ETauriMocks() {
             updateFileStatus(runtime, path, nextStatusAfterUnstage);
           }
           return null;
+        }
+        case "repo_delete_unversioned": {
+          const path = typeof req.path === "string" ? req.path : "";
+          if (!path) return null;
+          const target = runtime.status.files.find((entry) => entry.path === path);
+          if (!target || target.status !== "untracked") {
+            throw new Error("Only unversioned files can be deleted.");
+          }
+          runtime.status.files = runtime.status.files.filter((entry) => entry.path !== path);
+          delete runtime.changelists.assignments[path];
+          delete runtime.changelists.hunk_assignments[path];
+          syncStatusFromChangelists(runtime);
+          return null;
+        }
+        case "commit_staged": {
+          const message = typeof req.message === "string" ? req.message.trim() : "";
+          const paths = ensureStringArray(req.paths);
+          if (!message) {
+            throw new Error("Commit message is required.");
+          }
+          if (paths.length === 0) {
+            throw new Error("Select at least one staged file to commit.");
+          }
+          const stagedPathSet = new Set(
+            runtime.status.files
+              .filter((file) => isStagedStatus(file.status))
+              .map((file) => file.path)
+          );
+          if (paths.some((path) => !stagedPathSet.has(path))) {
+            throw new Error("Some selected files are no longer staged.");
+          }
+          applyCommitToPaths(runtime, paths);
+          return {
+            head: {
+              branch_name: "main",
+              oid_short: "d4e5f6a"
+            },
+            commit_id: "d4e5f6a7b8c9",
+            committed_paths: paths
+          };
         }
         case "cl_assign_files": {
           const changelistId =

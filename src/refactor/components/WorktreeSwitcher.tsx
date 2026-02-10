@@ -16,10 +16,13 @@ interface WorktreeSwitcherProps {
   repoBusy: boolean;
   worktreeBusy: boolean;
   fetchBusy: boolean;
+  commitBusy: boolean;
+  commitDisabled: boolean;
   onOpenRepo: () => void;
   onSelectRecentRepo: (path: string) => void;
   onSelectWorktree: (path: string) => void;
   onFetch: () => void;
+  onCommitClick: () => void;
 }
 
 const getWorktreeName = (path: string) => {
@@ -42,10 +45,13 @@ export function WorktreeSwitcher({
   repoBusy,
   worktreeBusy,
   fetchBusy,
+  commitBusy,
+  commitDisabled,
   onOpenRepo,
   onSelectRecentRepo,
   onSelectWorktree,
-  onFetch
+  onFetch,
+  onCommitClick
 }: WorktreeSwitcherProps) {
   return (
     <div className="flex items-center justify-between px-4 py-2 border-b border-[#323232] bg-[#3c3f41]">
@@ -188,9 +194,10 @@ export function WorktreeSwitcher({
         <Button
           variant="ghost"
           size="icon"
-          className="size-8 hover:bg-[#4e5254] text-[#afb1b3]"
-          title="Commit Staged"
-          disabled
+          className={`size-8 hover:bg-[#4e5254] text-[#afb1b3] ${commitBusy ? "animate-pulse" : ""}`}
+          title="Commit staged files"
+          disabled={commitDisabled || commitBusy}
+          onClick={onCommitClick}
         >
           <GitCommit className="size-4" />
         </Button>

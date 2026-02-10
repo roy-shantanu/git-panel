@@ -31,6 +31,7 @@ fn main() {
             api::repo_stage,
             api::repo_track,
             api::repo_unstage,
+            api::repo_delete_unversioned,
             api::repo_branches,
             api::repo_checkout,
             api::repo_create_branch,
@@ -46,6 +47,7 @@ fn main() {
             api::cl_unassign_hunks,
             api::commit_prepare,
             api::commit_execute,
+            api::commit_staged,
             api::repo_list_recent,
             api::app_version
         ])

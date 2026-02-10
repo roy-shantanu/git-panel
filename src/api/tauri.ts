@@ -77,6 +77,10 @@ export async function repoUnstage(repo_id: string, path: string): Promise<void> 
   return invoke("repo_unstage", { req: { repo_id, path } });
 }
 
+export async function repoDeleteUnversioned(repo_id: string, path: string): Promise<void> {
+  return invoke("repo_delete_unversioned", { req: { repo_id, path } });
+}
+
 export async function repoListRecent(): Promise<RepoListItem[]> {
   return invoke("repo_list_recent");
 }
@@ -174,6 +178,15 @@ export async function commitExecute(
   options?: CommitOptions
 ): Promise<CommitResult> {
   return invoke("commit_execute", { req: { repo_id, changelist_id, message, options } });
+}
+
+export async function commitStaged(
+  repo_id: string,
+  message: string,
+  paths: string[],
+  options?: CommitOptions
+): Promise<CommitResult> {
+  return invoke("commit_staged", { req: { repo_id, message, paths, options } });
 }
 
 export async function wtList(repo_root: string): Promise<WorktreeList> {

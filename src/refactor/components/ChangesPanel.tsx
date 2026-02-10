@@ -9,7 +9,6 @@ import {
   AlignJustify
 } from "lucide-react";
 import { getIconForFilePath, getIconUrlForFilePath } from "vscode-material-icons";
-import { ScrollArea } from "./ui/scroll-area";
 import { Button } from "./ui/button";
 import { Switch } from "./ui/switch";
 import { Label } from "./ui/label";
@@ -25,6 +24,10 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from "./ui/dropdown-menu";
 import type { ChangelistState, RepoDiffKind, RepoStatus, StatusFile } from "../../types/ipc";
@@ -40,6 +43,11 @@ interface ChangesPanelProps {
   onSetActiveChangelist: (id: string) => Promise<void>;
   onStageFile: (file: StatusFile) => Promise<void>;
   onUnstageFile: (file: StatusFile) => Promise<void>;
+  onStageAllInChangelist: (id: string) => Promise<void>;
+  onAddAllUnversioned: () => Promise<void>;
+  onMovePathsToChangelist: (paths: string[], targetId: string) => Promise<void>;
+  onUnstageFilesToChangelist: (paths: string[], targetId: string) => Promise<void>;
+  onDeleteUnversionedFile: (path: string) => Promise<void>;
   fileActionBusyPath: string | null;
   onFileSelect: (file: StatusFile, kind: "staged" | "unstaged") => void;
   selectedFile: StatusFile | null;
@@ -58,6 +66,9 @@ const ICONS_URL = "/material-icons";
 
 const isStagedStatus = (status: StatusFile["status"]) =>
   status === "staged" || status === "both";
+
+const isStageableTrackedStatus = (status: StatusFile["status"]) =>
+  status === "unstaged" || status === "both";
 
 const isTrackedUnstagedStatus = (status: StatusFile["status"]) =>
   status === "unstaged" || status === "both" || status === "conflicted";
@@ -86,6 +97,27 @@ const splitPath = (path: string) => {
   return { name, dir };
 };
 
+type ContextMenuTarget =
+  | { kind: "regular-list"; listId: string }
+  | { kind: "regular-file"; listId: string; path: string }
+  | { kind: "staged-list" }
+  | { kind: "staged-file"; path: string }
+  | { kind: "unversioned-list" }
+  | { kind: "unversioned-file"; path: string };
+
+type ConfirmAction =
+  | { kind: "stage-all"; listId: string; listName: string; count: number }
+  | { kind: "add-all"; count: number }
+  | {
+      kind: "move";
+      paths: string[];
+      targetId: string;
+      targetName: string;
+      sourceLabel: string;
+    }
+  | { kind: "unstage-to-list"; paths: string[]; targetId: string; targetName: string; count: number }
+  | { kind: "delete-unversioned-file"; path: string };
+
 export function ChangesPanel({
   status,
   changelists,
@@ -97,6 +129,11 @@ export function ChangesPanel({
   onSetActiveChangelist,
   onStageFile,
   onUnstageFile,
+  onStageAllInChangelist,
+  onAddAllUnversioned,
+  onMovePathsToChangelist,
+  onUnstageFilesToChangelist,
+  onDeleteUnversionedFile,
   fileActionBusyPath,
   onFileSelect,
   selectedFile,
@@ -114,17 +151,19 @@ export function ChangesPanel({
   const [renameName, setRenameName] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
   const [panelBusy, setPanelBusy] = useState(false);
   const [contextMenu, setContextMenu] = useState<{
     open: boolean;
     x: number;
     y: number;
-    listId: string | null;
+    target: ContextMenuTarget | null;
   }>({
     open: false,
     x: 0,
     y: 0,
-    listId: null
+    target: null
   });
 
   const files = status?.files ?? EMPTY_FILES;
@@ -162,19 +201,51 @@ export function ChangesPanel({
     return counts;
   }, [files]);
 
-  const changelistItems = changelists?.lists ?? [];
+  const changelistItems = useMemo(() => changelists?.lists ?? [], [changelists?.lists]);
+  const listById = useMemo(
+    () => new Map(changelistItems.map((item) => [item.id, item])),
+    [changelistItems]
+  );
   const activeChangelistId = changelists?.active_id ?? "default";
   const activeChangelistName =
     changelistItems.find((item) => item.id === activeChangelistId)?.name ?? "Default";
-  const contextMenuTarget =
-    contextMenu.listId === null
-      ? null
-      : changelistItems.find((item) => item.id === contextMenu.listId) ?? null;
-  const contextTargetIsRealList = !!contextMenuTarget;
-  const contextTargetIsDefault = contextMenuTarget?.id === "default";
-  const contextTargetIsActive = contextMenuTarget?.id === activeChangelistId;
+  const hasMultipleChangelists = changelistItems.length > 1;
+  const contextTarget = contextMenu.target;
+  const contextRegularList =
+    contextTarget?.kind === "regular-list" ? listById.get(contextTarget.listId) ?? null : null;
+  const contextRegularFile =
+    contextTarget?.kind === "regular-file"
+      ? (filesByChangelist.get(contextTarget.listId) ?? []).find(
+          (file) => file.path === contextTarget.path
+        ) ?? null
+      : null;
+  const contextStagedFile =
+    contextTarget?.kind === "staged-file"
+      ? stagedFiles.find((file) => file.path === contextTarget.path) ?? null
+      : null;
+  const contextUnversionedFile =
+    contextTarget?.kind === "unversioned-file"
+      ? unversionedFiles.find((file) => file.path === contextTarget.path) ?? null
+      : null;
+  const contextMoveTargetsForRegularList = contextRegularList
+    ? changelistItems.filter((item) => item.id !== contextRegularList.id)
+    : [];
+  const contextMoveTargetsForRegularFile =
+    contextRegularFile && contextTarget?.kind === "regular-file"
+      ? changelistItems.filter((item) => item.id !== contextTarget.listId)
+      : [];
+  const contextUnstageTargets = changelistItems;
   const deleteMoveTargetName =
     deleteTarget?.id === activeChangelistId ? "Default" : activeChangelistName;
+  const contextRegularListFiles = contextRegularList
+    ? filesByChangelist.get(contextRegularList.id) ?? EMPTY_FILES
+    : EMPTY_FILES;
+  const contextRegularListStageablePaths = contextRegularListFiles
+    .filter((file) => isStageableTrackedStatus(file.status))
+    .map((file) => file.path);
+  const contextRegularListAllPaths = contextRegularListFiles.map((file) => file.path);
+  const contextStagedPaths = stagedFiles.map((file) => file.path);
+  const contextUnversionedPaths = unversionedFiles.map((file) => file.path);
 
   const toggleSection = (id: string) => {
     setCollapsed((prev) => {
@@ -252,55 +323,160 @@ export function ChangesPanel({
     setCreateOpen(true);
   };
 
-  const openContextMenu = (
-    event: { preventDefault: () => void; clientX: number; clientY: number },
-    listId: string | null
-  ) => {
-    if (!listId || listId === UNVERSIONED_LIST_ID) return;
-    const list = changelistItems.find((item) => item.id === listId);
-    if (!list) return;
-    const isDefault = list.id === "default";
-    const isActive = list.id === activeChangelistId;
-    if (isDefault && isActive) return;
+  const closeContextMenu = () => {
+    setContextMenu((prev) => ({ ...prev, open: false, target: null }));
+  };
 
+  const openContextMenu = (
+    event: {
+      preventDefault: () => void;
+      stopPropagation?: () => void;
+      clientX: number;
+      clientY: number;
+    },
+    target: ContextMenuTarget
+  ) => {
     event.preventDefault();
+    if (event.stopPropagation) event.stopPropagation();
     setContextMenu({
       open: true,
       x: event.clientX,
       y: event.clientY,
-      listId
+      target
     });
   };
 
+  const openConfirmDialog = (action: ConfirmAction) => {
+    setConfirmError(null);
+    setConfirmAction(action);
+    closeContextMenu();
+  };
+
   const handleContextSetActiveChangelist = async () => {
-    if (!contextMenuTarget || contextTargetIsActive) return;
+    if (!contextRegularList || contextRegularList.id === activeChangelistId) return;
     try {
       setPanelBusy(true);
-      await onSetActiveChangelist(contextMenuTarget.id);
+      await onSetActiveChangelist(contextRegularList.id);
     } catch (error) {
       console.error("context set active failed", error);
     } finally {
       setPanelBusy(false);
-      setContextMenu((prev) => ({ ...prev, open: false }));
+      closeContextMenu();
     }
   };
 
   const handleContextDeleteChangelist = () => {
-    if (!contextMenuTarget || contextTargetIsDefault) return;
-    setDeleteTarget({ id: contextMenuTarget.id, name: contextMenuTarget.name });
-    setContextMenu((prev) => ({ ...prev, open: false }));
+    if (!contextRegularList || contextRegularList.id === "default") return;
+    setDeleteTarget({ id: contextRegularList.id, name: contextRegularList.name });
+    closeContextMenu();
   };
 
   const handleContextRenameChangelist = () => {
-    if (!contextMenuTarget || contextTargetIsDefault) return;
-    setRenameTarget({ id: contextMenuTarget.id, name: contextMenuTarget.name });
-    setRenameName(contextMenuTarget.name);
+    if (!contextRegularList || contextRegularList.id === "default") return;
+    setRenameTarget({ id: contextRegularList.id, name: contextRegularList.name });
+    setRenameName(contextRegularList.name);
     setRenameError(null);
-    setContextMenu((prev) => ({ ...prev, open: false }));
+    closeContextMenu();
+  };
+
+  const handleContextStageFile = async (file: StatusFile) => {
+    try {
+      setPanelBusy(true);
+      await onStageFile(file);
+    } catch (error) {
+      console.error("context stage file failed", error);
+    } finally {
+      setPanelBusy(false);
+      closeContextMenu();
+    }
+  };
+
+  const confirmOperationCopy = useMemo(() => {
+    if (!confirmAction) return null;
+    if (confirmAction.kind === "stage-all") {
+      return {
+        title: "Stage all files",
+        description: `Stage ${confirmAction.count} file${
+          confirmAction.count === 1 ? "" : "s"
+        } in "${confirmAction.listName}"?`,
+        confirmLabel: "Stage all",
+        destructive: false
+      };
+    }
+    if (confirmAction.kind === "add-all") {
+      return {
+        title: "Add all unversioned files",
+        description: `Add ${confirmAction.count} unversioned file${
+          confirmAction.count === 1 ? "" : "s"
+        } to the active changelist?`,
+        confirmLabel: "Add all",
+        destructive: false
+      };
+    }
+    if (confirmAction.kind === "move") {
+      return {
+        title: "Move to changelist",
+        description: `Move ${confirmAction.paths.length} file${
+          confirmAction.paths.length === 1 ? "" : "s"
+        } from "${confirmAction.sourceLabel}" to "${confirmAction.targetName}"?`,
+        confirmLabel: "Move",
+        destructive: false
+      };
+    }
+    if (confirmAction.kind === "unstage-to-list") {
+      return {
+        title: "Unstage to changelist",
+        description: `Unstage ${confirmAction.count} file${
+          confirmAction.count === 1 ? "" : "s"
+        } into "${confirmAction.targetName}"?`,
+        confirmLabel: "Unstage",
+        destructive: false
+      };
+    }
+    return {
+      title: "Delete unversioned file",
+      description: `Delete "${confirmAction.path}" from disk? This cannot be undone.`,
+      confirmLabel: "Delete file",
+      destructive: true
+    };
+  }, [confirmAction]);
+
+  const executeConfirmAction = async () => {
+    if (!confirmAction) return;
+    try {
+      setPanelBusy(true);
+      setConfirmError(null);
+      switch (confirmAction.kind) {
+        case "stage-all":
+          await onStageAllInChangelist(confirmAction.listId);
+          break;
+        case "add-all":
+          await onAddAllUnversioned();
+          break;
+        case "move":
+          await onMovePathsToChangelist(confirmAction.paths, confirmAction.targetId);
+          break;
+        case "unstage-to-list":
+          await onUnstageFilesToChangelist(confirmAction.paths, confirmAction.targetId);
+          break;
+        case "delete-unversioned-file":
+          await onDeleteUnversionedFile(confirmAction.path);
+          break;
+        default:
+          break;
+      }
+      setConfirmAction(null);
+      setConfirmError(null);
+    } catch (error) {
+      console.error("confirm action failed", error);
+      setConfirmError((error as Error)?.message ?? "Operation failed.");
+    } finally {
+      setPanelBusy(false);
+    }
   };
 
   return (
-    <div className="w-80 shrink-0 border-r border-[#323232] bg-[#3c3f41] flex flex-col">
+    <div className="w-80 shrink-0 min-h-0 border-r border-[#323232] bg-[#3c3f41] flex flex-col">
       <div className="px-4 py-3 border-b border-[#323232]">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm text-[#bbbbbb]">Source Control</h2>
@@ -354,12 +530,16 @@ export function ChangesPanel({
         </div>
       </div>
 
-      <ScrollArea className="flex-1">
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
         <div className="p-2">
           <div className="mb-2">
             <button
               onClick={() => toggleSection(STAGED_LIST_ID)}
               className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-[#4e5254] rounded text-left"
+              onContextMenu={(event) => {
+                openContextMenu(event, { kind: "staged-list" });
+              }}
+              data-testid={`changelist-row:${STAGED_LIST_ID}`}
             >
               {collapsed.has(STAGED_LIST_ID) ? (
                 <ChevronRight className="size-4 text-[#afb1b3]" />
@@ -385,6 +565,9 @@ export function ChangesPanel({
                       >
                         <button
                           onClick={() => onFileSelect(file, "staged")}
+                          onContextMenu={(event) => {
+                            openContextMenu(event, { kind: "staged-file", path: file.path });
+                          }}
                           data-active={isSelected ? "true" : "false"}
                           data-testid={`file-row-staged:${file.path}`}
                           className={`flex items-center gap-2 min-w-0 overflow-hidden px-2 py-1.5 rounded text-left hover:bg-[#4e5254] ${
@@ -450,8 +633,7 @@ export function ChangesPanel({
                   className="flex items-center gap-2 px-2 py-1.5 hover:bg-[#4e5254] rounded"
                   data-testid={`changelist-row:${list.id}`}
                   onContextMenu={(event) => {
-                    event.stopPropagation();
-                    openContextMenu(event, list.id);
+                    openContextMenu(event, { kind: "regular-list", listId: list.id });
                   }}
                 >
                   <button onClick={() => toggleSection(list.id)}>
@@ -501,6 +683,13 @@ export function ChangesPanel({
                               onClick={() => {
                                 onSelectedChangelistChange(list.id);
                                 onFileSelect(file, "unstaged");
+                              }}
+                              onContextMenu={(event) => {
+                                openContextMenu(event, {
+                                  kind: "regular-file",
+                                  listId: list.id,
+                                  path: file.path
+                                });
                               }}
                               data-active={isSelected ? "true" : "false"}
                               data-testid={`file-row-unstaged:${list.id}:${file.path}`}
@@ -560,6 +749,9 @@ export function ChangesPanel({
             <div
               className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-[#4e5254] rounded text-left"
               data-testid={`changelist-row:${UNVERSIONED_LIST_ID}`}
+              onContextMenu={(event) => {
+                openContextMenu(event, { kind: "unversioned-list" });
+              }}
             >
               <button onClick={() => toggleSection(UNVERSIONED_LIST_ID)}>
                 {collapsed.has(UNVERSIONED_LIST_ID) ? (
@@ -598,6 +790,12 @@ export function ChangesPanel({
                           onClick={() => {
                             onSelectedChangelistChange(UNVERSIONED_LIST_ID);
                             onFileSelect(file, "unstaged");
+                          }}
+                          onContextMenu={(event) => {
+                            openContextMenu(event, {
+                              kind: "unversioned-file",
+                              path: file.path
+                            });
                           }}
                           data-active={isSelected ? "true" : "false"}
                           data-testid={`file-row-unstaged:${UNVERSIONED_LIST_ID}:${file.path}`}
@@ -652,13 +850,13 @@ export function ChangesPanel({
             )}
           </div>
         </div>
-      </ScrollArea>
+      </div>
 
       <DropdownMenu
         open={contextMenu.open}
         onOpenChange={(open) => {
           if (!open) {
-            setContextMenu((prev) => ({ ...prev, open: false }));
+            closeContextMenu();
           }
         }}
       >
@@ -674,44 +872,286 @@ export function ChangesPanel({
         <DropdownMenuContent
           side="right"
           align="start"
-          className="w-48 bg-[#3c3f41] border-[#323232] text-[#bbbbbb] z-50"
+          className="w-56 bg-[#3c3f41] border-[#323232] text-[#bbbbbb] z-50"
         >
-          {contextTargetIsRealList && !contextTargetIsActive && (
+          {contextTarget?.kind === "regular-list" &&
+            contextRegularList &&
+            contextRegularList.id !== activeChangelistId && (
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  event.preventDefault();
+                  void handleContextSetActiveChangelist();
+                }}
+                disabled={panelBusy}
+                className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+              >
+                Set active
+              </DropdownMenuItem>
+            )}
+
+          {contextTarget?.kind === "regular-list" && contextRegularList && (
             <DropdownMenuItem
               onSelect={(event) => {
                 event.preventDefault();
-                void handleContextSetActiveChangelist();
+                openConfirmDialog({
+                  kind: "stage-all",
+                  listId: contextRegularList.id,
+                  listName: contextRegularList.name,
+                  count: contextRegularListStageablePaths.length
+                });
+              }}
+              disabled={panelBusy || contextRegularListStageablePaths.length === 0}
+              className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+            >
+              Stage all
+            </DropdownMenuItem>
+          )}
+
+          {contextTarget?.kind === "regular-list" &&
+            contextRegularList &&
+            hasMultipleChangelists &&
+            contextMoveTargetsForRegularList.length > 0 && (
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]">
+                  Move to changelist
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="bg-[#3c3f41] border-[#323232] text-[#bbbbbb]">
+                  {contextMoveTargetsForRegularList.map((target) => (
+                    <DropdownMenuItem
+                      key={`move-list-${contextRegularList.id}-${target.id}`}
+                      onSelect={(event) => {
+                        event.preventDefault();
+                        openConfirmDialog({
+                          kind: "move",
+                          paths: contextRegularListAllPaths,
+                          targetId: target.id,
+                          targetName: target.name,
+                          sourceLabel: contextRegularList.name
+                        });
+                      }}
+                      disabled={panelBusy || contextRegularListAllPaths.length === 0}
+                      className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+                    >
+                      {target.name}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            )}
+
+          {contextTarget?.kind === "regular-file" &&
+            contextRegularFile &&
+            hasMultipleChangelists &&
+            contextMoveTargetsForRegularFile.length > 0 && (
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]">
+                  Move to changelist
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="bg-[#3c3f41] border-[#323232] text-[#bbbbbb]">
+                  {contextMoveTargetsForRegularFile.map((target) => (
+                    <DropdownMenuItem
+                      key={`move-file-${contextRegularFile.path}-${target.id}`}
+                      onSelect={(event) => {
+                        event.preventDefault();
+                        openConfirmDialog({
+                          kind: "move",
+                          paths: [contextRegularFile.path],
+                          targetId: target.id,
+                          targetName: target.name,
+                          sourceLabel: contextRegularFile.changelist_name ?? "Default"
+                        });
+                      }}
+                      disabled={panelBusy}
+                      className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+                    >
+                      {target.name}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            )}
+
+          {contextTarget?.kind === "regular-file" && contextRegularFile && (
+            <DropdownMenuItem
+              onSelect={(event) => {
+                event.preventDefault();
+                void handleContextStageFile(contextRegularFile);
+              }}
+              disabled={panelBusy || fileActionBusyPath === contextRegularFile.path}
+              className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+            >
+              Stage
+            </DropdownMenuItem>
+          )}
+
+          {contextTarget?.kind === "staged-list" && (
+            <DropdownMenuItem
+              onSelect={(event) => {
+                event.preventDefault();
+                openConfirmDialog({
+                  kind: "unstage-to-list",
+                  paths: contextStagedPaths,
+                  targetId: activeChangelistId,
+                  targetName: activeChangelistName,
+                  count: contextStagedPaths.length
+                });
+              }}
+              disabled={panelBusy || contextStagedPaths.length === 0}
+              className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+            >
+              Unstage all
+            </DropdownMenuItem>
+          )}
+
+          {contextTarget?.kind === "staged-file" && contextStagedFile && (
+            <DropdownMenuItem
+              onSelect={(event) => {
+                event.preventDefault();
+                openConfirmDialog({
+                  kind: "unstage-to-list",
+                  paths: [contextStagedFile.path],
+                  targetId: activeChangelistId,
+                  targetName: activeChangelistName,
+                  count: 1
+                });
+              }}
+              disabled={panelBusy || fileActionBusyPath === contextStagedFile.path}
+              className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+            >
+              Unstage
+            </DropdownMenuItem>
+          )}
+
+          {(contextTarget?.kind === "staged-list" || contextTarget?.kind === "staged-file") &&
+            hasMultipleChangelists &&
+            contextUnstageTargets.length > 0 && (
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]">
+                  Unstage to changelist
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="bg-[#3c3f41] border-[#323232] text-[#bbbbbb]">
+                  {contextUnstageTargets.map((target) => {
+                    const paths =
+                      contextTarget?.kind === "staged-file" && contextStagedFile
+                        ? [contextStagedFile.path]
+                        : contextStagedPaths;
+                    return (
+                      <DropdownMenuItem
+                        key={`unstage-${target.id}`}
+                        onSelect={(event) => {
+                          event.preventDefault();
+                          openConfirmDialog({
+                            kind: "unstage-to-list",
+                            paths,
+                            targetId: target.id,
+                            targetName: target.name,
+                            count: paths.length
+                          });
+                        }}
+                        disabled={panelBusy || paths.length === 0}
+                        className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+                      >
+                        {target.name}
+                      </DropdownMenuItem>
+                    );
+                  })}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            )}
+
+          {contextTarget?.kind === "unversioned-list" && (
+            <DropdownMenuItem
+              onSelect={(event) => {
+                event.preventDefault();
+                openConfirmDialog({
+                  kind: "add-all",
+                  count: contextUnversionedPaths.length
+                });
+              }}
+              disabled={panelBusy || contextUnversionedPaths.length === 0}
+              className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+            >
+              Add all
+            </DropdownMenuItem>
+          )}
+
+          {contextTarget?.kind === "unversioned-list" && contextUnversionedPaths.length > 0 && (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]">
+                Delete file
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="bg-[#3c3f41] border-[#323232] text-[#bbbbbb]">
+                {contextUnversionedPaths.map((path) => (
+                  <DropdownMenuItem
+                    key={`delete-unversioned-${path}`}
+                    onSelect={(event) => {
+                      event.preventDefault();
+                      openConfirmDialog({ kind: "delete-unversioned-file", path });
+                    }}
+                    disabled={panelBusy}
+                    className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254] text-[#d6a19f]"
+                  >
+                    {path}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          )}
+
+          {contextTarget?.kind === "unversioned-file" && contextUnversionedFile && (
+            <DropdownMenuItem
+              onSelect={(event) => {
+                event.preventDefault();
+                void handleContextStageFile(contextUnversionedFile);
+              }}
+              disabled={panelBusy || fileActionBusyPath === contextUnversionedFile.path}
+              className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+            >
+              Add file
+            </DropdownMenuItem>
+          )}
+
+          {contextTarget?.kind === "unversioned-file" && contextUnversionedFile && (
+            <DropdownMenuItem
+              onSelect={(event) => {
+                event.preventDefault();
+                openConfirmDialog({
+                  kind: "delete-unversioned-file",
+                  path: contextUnversionedFile.path
+                });
               }}
               disabled={panelBusy}
-              className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
-            >
-              Set active
-            </DropdownMenuItem>
-          )}
-
-          {contextTargetIsRealList && !contextTargetIsDefault && (
-            <DropdownMenuItem
-              onSelect={(event) => {
-                event.preventDefault();
-                handleContextRenameChangelist();
-              }}
-              className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
-            >
-              Rename changelist
-            </DropdownMenuItem>
-          )}
-
-          {contextTargetIsRealList && !contextTargetIsDefault && (
-            <DropdownMenuItem
-              onSelect={(event) => {
-                event.preventDefault();
-                handleContextDeleteChangelist();
-              }}
               className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254] text-[#d6a19f]"
             >
-              Delete changelist
+              Delete file
             </DropdownMenuItem>
           )}
+
+          {contextTarget?.kind === "regular-list" &&
+            contextRegularList &&
+            contextRegularList.id !== "default" && (
+              <>
+                <DropdownMenuSeparator className="bg-[#323232]" />
+                <DropdownMenuItem
+                  onSelect={(event) => {
+                    event.preventDefault();
+                    handleContextRenameChangelist();
+                  }}
+                  className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254]"
+                >
+                  Rename changelist
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={(event) => {
+                    event.preventDefault();
+                    handleContextDeleteChangelist();
+                  }}
+                  className="cursor-pointer hover:bg-[#4e5254] focus:bg-[#4e5254] text-[#d6a19f]"
+                >
+                  Delete changelist
+                </DropdownMenuItem>
+              </>
+            )}
         </DropdownMenuContent>
       </DropdownMenu>
 
@@ -800,6 +1240,47 @@ export function ChangesPanel({
               disabled={panelBusy}
             >
               Rename
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!confirmAction}
+        onOpenChange={(open) => {
+          if (!open) {
+            setConfirmAction(null);
+            setConfirmError(null);
+          }
+        }}
+      >
+        <DialogContent className="bg-[#3c3f41] border-[#323232] text-[#bbbbbb]">
+          <DialogHeader>
+            <DialogTitle>{confirmOperationCopy?.title ?? "Confirm action"}</DialogTitle>
+            <DialogDescription className="text-[#787878]">
+              {confirmOperationCopy?.description ?? "Proceed with this action?"}
+            </DialogDescription>
+          </DialogHeader>
+          {confirmError && <div className="text-xs text-[#c75450]">{confirmError}</div>}
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              className="text-[#bbbbbb] hover:bg-[#4e5254]"
+              onClick={() => setConfirmAction(null)}
+              disabled={panelBusy}
+            >
+              Cancel
+            </Button>
+            <Button
+              className={
+                confirmOperationCopy?.destructive
+                  ? "bg-[#6b3d3a] hover:bg-[#7b4542] text-[#f3d3d2]"
+                  : "bg-[#4e5254] hover:bg-[#5a5f63] text-[#bbbbbb]"
+              }
+              onClick={executeConfirmAction}
+              disabled={panelBusy}
+            >
+              {confirmOperationCopy?.confirmLabel ?? "Confirm"}
             </Button>
           </DialogFooter>
         </DialogContent>

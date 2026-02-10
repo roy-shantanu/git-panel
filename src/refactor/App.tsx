@@ -7,6 +7,23 @@ import { ChangesPanel } from "./components/ChangesPanel";
 import { DiffView } from "./components/DiffView";
 import { BranchPanel } from "./components/BranchPanel";
 import { WelcomePage } from "./components/WelcomePage";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "./components/ui/dialog";
+import { Button } from "./components/ui/button";
+import {
+  Toast,
+  ToastClose,
+  ToastDescription,
+  ToastProvider,
+  ToastTitle,
+  ToastViewport
+} from "./components/ui/toast";
 import type { WatcherStatus } from "./components/WatcherPill";
 import { useAppStore } from "../state/store";
 import {
@@ -17,8 +34,11 @@ import {
   clList,
   clRename,
   clSetActive,
+  clUnassignFiles,
+  commitStaged,
   repoBranches,
   repoCheckout,
+  repoDeleteUnversioned,
   repoFetch,
   repoListRecent,
   repoOpen,
@@ -51,6 +71,33 @@ const hasUnstagedChanges = (status: StatusFile["status"]) =>
 const UNVERSIONED_LIST_ID = "unversioned-files";
 const DEFAULT_CHANGE_LIST_ID = "default";
 
+type ToastState = {
+  id: number;
+  kind: "success" | "error";
+  title: string;
+  description?: string;
+};
+
+const splitPath = (path: string) => {
+  const normalized = path.replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  const name = parts.pop() ?? normalized;
+  const dir = parts.join("/");
+  return { name, dir };
+};
+
+const uniquePaths = (paths: string[]) => {
+  const next = new Set<string>();
+  const ordered: string[] = [];
+  for (const rawPath of paths) {
+    const path = rawPath.trim();
+    if (!path || next.has(path)) continue;
+    next.add(path);
+    ordered.push(path);
+  }
+  return ordered;
+};
+
 export default function App() {
   const { repo, status, recent, setRepo, setRecent, setStatus } = useAppStore();
   const [branches, setBranches] = useState<BranchList | null>(null);
@@ -73,11 +120,12 @@ export default function App() {
   const [viewMode, setViewMode] = useState<"unified" | "sideBySide">("unified");
   const [showHunks, setShowHunks] = useState(false);
   const [isSourceControlOpen, setIsSourceControlOpen] = useState(true);
-
-  const handleCommit = () => {
-    console.log("Commit clicked");
-    // Handle commit action
-  };
+  const [commitDialogOpen, setCommitDialogOpen] = useState(false);
+  const [commitMessage, setCommitMessage] = useState("");
+  const [commitSelection, setCommitSelection] = useState<Set<string>>(new Set());
+  const [commitBusy, setCommitBusy] = useState(false);
+  const [commitError, setCommitError] = useState<string | null>(null);
+  const [toast, setToast] = useState<ToastState | null>(null);
 
   const toggleSourceControl = () => {
     setIsSourceControlOpen((prev) => !prev);
@@ -100,6 +148,11 @@ export default function App() {
       setSelectedDiffPayload(null);
       setSelectedDiffLoading(false);
       setSelectedDiffError(null);
+      setCommitDialogOpen(false);
+      setCommitMessage("");
+      setCommitSelection(new Set());
+      setCommitBusy(false);
+      setCommitError(null);
       return;
     }
 
@@ -266,6 +319,43 @@ export default function App() {
     });
   }, [recent]);
 
+  const stagedFiles = useMemo(() => {
+    const files = (status?.files ?? []).filter((file) => hasStagedChanges(file.status));
+    files.sort((a, b) => a.path.localeCompare(b.path));
+    return files;
+  }, [status?.files]);
+
+  const selectedCommitPaths = useMemo(
+    () => stagedFiles.filter((file) => commitSelection.has(file.path)).map((file) => file.path),
+    [stagedFiles, commitSelection]
+  );
+
+  const showToast = (kind: ToastState["kind"], title: string, description?: string) => {
+    setToast({
+      id: Date.now(),
+      kind,
+      title,
+      description
+    });
+  };
+
+  useEffect(() => {
+    if (!commitDialogOpen) return;
+    if (stagedFiles.length === 0) {
+      setCommitDialogOpen(false);
+      setCommitError(null);
+      return;
+    }
+    const stagedPathSet = new Set(stagedFiles.map((file) => file.path));
+    setCommitSelection((prev) => {
+      const next = new Set<string>();
+      for (const path of prev) {
+        if (stagedPathSet.has(path)) next.add(path);
+      }
+      return next;
+    });
+  }, [commitDialogOpen, stagedFiles]);
+
   const handleOpenRepoPicker = async () => {
     try {
       setRepoBusy(true);
@@ -353,6 +443,65 @@ export default function App() {
     setChangelists(nextChangelists);
   };
 
+  const openCommitDialog = () => {
+    if (!repo?.repo_id) return;
+    if (stagedFiles.length === 0) {
+      showToast("error", "Commit failed", "No staged files to commit.");
+      return;
+    }
+    setCommitMessage("");
+    setCommitSelection(new Set(stagedFiles.map((file) => file.path)));
+    setCommitError(null);
+    setCommitDialogOpen(true);
+  };
+
+  const toggleCommitSelection = (path: string) => {
+    setCommitSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  };
+
+  const handleCommit = async () => {
+    if (!repo?.repo_id) return;
+    if (!commitMessage.trim()) {
+      setCommitError("Commit message is required.");
+      return;
+    }
+    if (selectedCommitPaths.length === 0) {
+      setCommitError("Select at least one file to commit.");
+      return;
+    }
+
+    try {
+      setCommitBusy(true);
+      setCommitError(null);
+      const result = await commitStaged(repo.repo_id, commitMessage.trim(), selectedCommitPaths);
+      setCommitDialogOpen(false);
+      setCommitMessage("");
+      setCommitSelection(new Set());
+      setCommitError(null);
+      await Promise.all([refreshRepoData(repo.repo_id), repoBranches(repo.repo_id).then(setBranches)]);
+      showToast(
+        "success",
+        "Commit successful",
+        `${result.committed_paths.length} file${result.committed_paths.length === 1 ? "" : "s"} committed (${result.commit_id.slice(0, 7)}).`
+      );
+    } catch (error) {
+      const message =
+        typeof error === "string" ? error : (error as Error)?.message ?? "Commit failed.";
+      setCommitError(message);
+      showToast("error", "Commit failed", message);
+    } finally {
+      setCommitBusy(false);
+    }
+  };
+
   const handleManualRefresh = async () => {
     if (!repo?.repo_id) return;
     try {
@@ -431,23 +580,59 @@ export default function App() {
     setChangelists(next);
   };
 
+  const resolveActiveChangelistId = async (repoId: string) => {
+    try {
+      const latest = await clList(repoId);
+      return latest.active_id ?? DEFAULT_CHANGE_LIST_ID;
+    } catch (error) {
+      console.error("cl_list failed while resolving active changelist", error);
+      return DEFAULT_CHANGE_LIST_ID;
+    }
+  };
+
+  const handleMovePathsToChangelist = async (paths: string[], targetId: string) => {
+    if (!repo?.repo_id) return;
+    const repoId = repo.repo_id;
+    const nextPaths = uniquePaths(paths);
+    if (nextPaths.length === 0) return;
+    await clAssignFiles(repoId, targetId, nextPaths);
+    await refreshRepoData(repoId);
+  };
+
+  const handleUnstageFilesToChangelist = async (paths: string[], targetId: string) => {
+    if (!repo?.repo_id) return;
+    const repoId = repo.repo_id;
+    const stagedPathSet = new Set(
+      (status?.files ?? [])
+        .filter((file) => hasStagedChanges(file.status))
+        .map((file) => file.path)
+    );
+    const nextPaths = uniquePaths(paths).filter((path) => stagedPathSet.has(path));
+    if (nextPaths.length === 0) return;
+    for (const path of nextPaths) {
+      await repoUnstage(repoId, path);
+    }
+    await clAssignFiles(repoId, targetId, nextPaths);
+    await refreshRepoData(repoId);
+  };
+
   const handleStageFile = async (file: StatusFile) => {
     if (!repo?.repo_id) return;
+    const repoId = repo.repo_id;
     try {
       setFileActionBusyPath(file.path);
       if (file.status === "untracked") {
-        await repoTrack(repo.repo_id, file.path);
+        await repoTrack(repoId, file.path);
         try {
-          const latestChangelists = await clList(repo.repo_id);
-          const targetId = latestChangelists.active_id ?? DEFAULT_CHANGE_LIST_ID;
-          await clAssignFiles(repo.repo_id, targetId, [file.path]);
+          const targetId = await resolveActiveChangelistId(repoId);
+          await clAssignFiles(repoId, targetId, [file.path]);
         } catch (assignError) {
           console.error("cl_assign_files failed after stage", assignError);
         }
       } else {
-        await repoStage(repo.repo_id, file.path);
+        await repoStage(repoId, file.path);
       }
-      await refreshRepoData(repo.repo_id);
+      await refreshRepoData(repoId);
     } catch (error) {
       console.error("repo_stage failed", error);
     } finally {
@@ -455,33 +640,65 @@ export default function App() {
     }
   };
 
+  const handleStageAllInChangelist = async (changelistId: string) => {
+    if (!repo?.repo_id || !status?.files) return;
+    const repoId = repo.repo_id;
+    const paths = uniquePaths(
+      status.files
+        .filter((file) => (file.changelist_id ?? DEFAULT_CHANGE_LIST_ID) === changelistId)
+        .filter((file) => file.status === "unstaged" || file.status === "both")
+        .map((file) => file.path)
+    );
+    if (paths.length === 0) return;
+    for (const path of paths) {
+      await repoStage(repoId, path);
+    }
+    await refreshRepoData(repoId);
+  };
+
+  const handleAddAllUnversioned = async () => {
+    if (!repo?.repo_id || !status?.files) return;
+    const repoId = repo.repo_id;
+    const paths = uniquePaths(
+      status.files
+        .filter((file) => file.status === "untracked")
+        .map((file) => file.path)
+    );
+    if (paths.length === 0) return;
+    for (const path of paths) {
+      await repoTrack(repoId, path);
+    }
+    const targetId = await resolveActiveChangelistId(repoId);
+    await clAssignFiles(repoId, targetId, paths);
+    await refreshRepoData(repoId);
+  };
+
   const handleUnstageFile = async (file: StatusFile) => {
     if (!repo?.repo_id) return;
+    const repoId = repo.repo_id;
     try {
       setFileActionBusyPath(file.path);
-      await repoUnstage(repo.repo_id, file.path);
-      let targetId = "default";
-      try {
-        const latestChangelists = await clList(repo.repo_id);
-        targetId = latestChangelists.active_id ?? "default";
-      } catch (listError) {
-        console.error("cl_list failed before unstage assignment", listError);
-      }
-      try {
-        await clAssignFiles(repo.repo_id, targetId, [file.path]);
-      } catch (assignError) {
-        // Keep unstage successful even if assignment fails due transient backend state.
-        console.error("cl_assign_files failed after unstage", assignError);
-      }
-      const nextStatus = await repoStatus(repo.repo_id);
-      setStatus(nextStatus);
-      const nextChangelists = await clList(repo.repo_id);
-      setChangelists(nextChangelists);
+      const targetId = await resolveActiveChangelistId(repoId);
+      await handleUnstageFilesToChangelist([file.path], targetId);
     } catch (error) {
       console.error("repo_unstage failed", error);
     } finally {
       setFileActionBusyPath(null);
     }
+  };
+
+  const handleDeleteUnversionedFile = async (path: string) => {
+    if (!repo?.repo_id) return;
+    const repoId = repo.repo_id;
+    const nextPath = path.trim();
+    if (!nextPath) return;
+    await repoDeleteUnversioned(repoId, nextPath);
+    try {
+      await clUnassignFiles(repoId, [nextPath]);
+    } catch (error) {
+      console.error("cl_unassign_files failed after deleting unversioned file", error);
+    }
+    await refreshRepoData(repoId);
   };
 
   useEffect(() => {
@@ -522,17 +739,18 @@ export default function App() {
   };
 
   return (
-    <div className="size-full h-full overflow-hidden flex flex-col bg-[#2b2b2b]">
-      {!repo ? (
-        <WelcomePage
-          recent={recentRepoOptions}
-          repoBusy={repoBusy}
-          onOpenRepo={handleOpenRepoPicker}
-          onSelectRecentRepo={handleSelectRecentRepo}
-        />
-      ) : (
-        <>
-          {/* Top Bar - Worktree Switcher */}
+    <ToastProvider swipeDirection="right">
+      <div className="size-full h-full overflow-hidden flex flex-col bg-[#2b2b2b]">
+        {!repo ? (
+          <WelcomePage
+            recent={recentRepoOptions}
+            repoBusy={repoBusy}
+            onOpenRepo={handleOpenRepoPicker}
+            onSelectRecentRepo={handleSelectRecentRepo}
+          />
+        ) : (
+          <>
+            {/* Top Bar - Worktree Switcher */}
             <WorktreeSwitcher
               repo={repo}
               recent={recentRepoOptions}
@@ -540,79 +758,221 @@ export default function App() {
               repoBusy={repoBusy}
               worktreeBusy={worktreeBusy}
               fetchBusy={fetchBusy}
-            onOpenRepo={handleOpenRepoPicker}
-            onSelectRecentRepo={handleSelectRecentRepo}
-            onSelectWorktree={handleSelectWorktree}
-            onFetch={handleFetch}
-          />
-
-          {/* Main Content Area */}
-          <div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
-            {/* Left Nav Panel */}
-            <LeftNavPanel
-              onCommitClick={handleCommit}
-              onSourceControlToggle={toggleSourceControl}
-              isSourceControlOpen={isSourceControlOpen}
+              commitBusy={commitBusy}
+              commitDisabled={!repo || stagedFiles.length === 0}
+              onOpenRepo={handleOpenRepoPicker}
+              onSelectRecentRepo={handleSelectRecentRepo}
+              onSelectWorktree={handleSelectWorktree}
+              onFetch={handleFetch}
+              onCommitClick={openCommitDialog}
             />
 
-            {/* Left Sidebar - Changes Panel */}
-            {isSourceControlOpen && (
-              <ChangesPanel
-                status={status}
-                changelists={changelists}
-                selectedChangelistId={selectedChangelistId}
-                onSelectedChangelistChange={setSelectedChangelistId}
-                onCreateChangelist={handleCreateChangelist}
-                onRenameChangelist={handleRenameChangelist}
-                onDeleteChangelist={handleDeleteChangelist}
-                onSetActiveChangelist={handleSetActiveChangelist}
-                onStageFile={handleStageFile}
-                onUnstageFile={handleUnstageFile}
-                fileActionBusyPath={fileActionBusyPath}
-                onFileSelect={handleSelectStatusFile}
-                selectedFile={selectedFile}
-                selectedDiffKind={selectedDiffKind}
-                viewMode={viewMode}
-                onViewModeChange={setViewMode}
-                showHunks={showHunks}
-                onShowHunksChange={setShowHunks}
+            {/* Main Content Area */}
+            <div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
+              {/* Left Nav Panel */}
+              <LeftNavPanel
+                onSourceControlToggle={toggleSourceControl}
+                isSourceControlOpen={isSourceControlOpen}
               />
-            )}
 
-            {/* Center - Diff View */}
-            {selectedFile ? (
-              <div className="flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
-                <DiffView
-                  fileName={selectedFile.path}
-                  payload={selectedDiffPayload}
-                  loading={selectedDiffLoading}
-                  error={selectedDiffError}
+              {/* Left Sidebar - Changes Panel */}
+              {isSourceControlOpen && (
+                <ChangesPanel
+                  status={status}
+                  changelists={changelists}
+                  selectedChangelistId={selectedChangelistId}
+                  onSelectedChangelistChange={setSelectedChangelistId}
+                  onCreateChangelist={handleCreateChangelist}
+                  onRenameChangelist={handleRenameChangelist}
+                  onDeleteChangelist={handleDeleteChangelist}
+                  onSetActiveChangelist={handleSetActiveChangelist}
+                  onStageFile={handleStageFile}
+                  onUnstageFile={handleUnstageFile}
+                  onStageAllInChangelist={handleStageAllInChangelist}
+                  onAddAllUnversioned={handleAddAllUnversioned}
+                  onMovePathsToChangelist={handleMovePathsToChangelist}
+                  onUnstageFilesToChangelist={handleUnstageFilesToChangelist}
+                  onDeleteUnversionedFile={handleDeleteUnversionedFile}
+                  fileActionBusyPath={fileActionBusyPath}
+                  onFileSelect={handleSelectStatusFile}
+                  selectedFile={selectedFile}
+                  selectedDiffKind={selectedDiffKind}
                   viewMode={viewMode}
+                  onViewModeChange={setViewMode}
                   showHunks={showHunks}
+                  onShowHunksChange={setShowHunks}
                 />
+              )}
+
+              {/* Center - Diff View */}
+              {selectedFile ? (
+                <div className="flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
+                  <DiffView
+                    fileName={selectedFile.path}
+                    payload={selectedDiffPayload}
+                    loading={selectedDiffLoading}
+                    error={selectedDiffError}
+                    viewMode={viewMode}
+                    showHunks={showHunks}
+                  />
+                </div>
+              ) : (
+                <div className="flex-1 min-w-0 min-h-0 bg-[#2b2b2b] flex items-center justify-center">
+                  <p className="text-[#787878]">Select a file to view changes</p>
+                </div>
+              )}
+            </div>
+
+            {/* Bottom Bar - Branch Panel */}
+            <BranchPanel
+              branchCurrent={branches?.current ?? "No branch"}
+              localBranches={branches?.locals ?? []}
+              remoteBranches={branches?.remotes ?? []}
+              aheadBehind={aheadBehind}
+              counts={status?.counts}
+              checkoutBusy={branchBusy}
+              watcherStatus={watcherStatus}
+              watcherBusy={watcherBusy}
+              onCheckout={handleCheckout}
+              onManualRefresh={handleManualRefresh}
+            />
+          </>
+        )}
+      </div>
+
+      <Dialog
+        open={commitDialogOpen}
+        onOpenChange={(open) => {
+          setCommitDialogOpen(open);
+          if (!open) {
+            setCommitError(null);
+          }
+        }}
+      >
+        <DialogContent
+          className="max-w-none sm:!max-w-none bg-[#3c3f41] border-[#323232] text-[#bbbbbb] flex flex-col"
+          style={{
+            width: "60vw",
+            maxWidth: "60vw",
+            height: "min(88vh, 920px)"
+          }}
+        >
+          <DialogHeader className="shrink-0 pr-8">
+            <DialogTitle>Commit staged files</DialogTitle>
+            <DialogDescription className="text-[#787878]">
+              Select staged files and provide a commit message.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex-1 min-h-0 flex flex-col gap-4">
+            <div className="flex-1 min-h-0 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-xs uppercase tracking-wide text-[#787878]">Staged files</div>
+                <div className="text-xs text-[#787878]">
+                  {selectedCommitPaths.length} of {stagedFiles.length} selected
+                </div>
               </div>
-            ) : (
-              <div className="flex-1 min-w-0 min-h-0 bg-[#2b2b2b] flex items-center justify-center">
-                <p className="text-[#787878]">Select a file to view changes</p>
+              <div className="h-full min-h-0 overflow-y-auto rounded border border-[#323232] bg-[#2b2b2b]">
+                {stagedFiles.length === 0 ? (
+                  <div className="p-3 text-sm text-[#787878]">No staged files.</div>
+                ) : (
+                  <div className="divide-y divide-[#323232]">
+                    {stagedFiles.map((file) => {
+                      const checked = commitSelection.has(file.path);
+                      const { name, dir } = splitPath(file.path);
+                      return (
+                        <label
+                          key={file.path}
+                          className={`flex cursor-pointer items-center gap-2 px-3 py-1.5 hover:bg-[#333638] ${checked ? "bg-[#333638]" : ""}`}
+                          data-testid={`commit-file:${file.path}`}
+                          title={file.path}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleCommitSelection(file.path)}
+                            disabled={commitBusy}
+                            className="mt-0.5 shrink-0"
+                          />
+                          <span className="min-w-0 flex-1 truncate text-sm text-[#bbbbbb]">
+                            {name}
+                            {dir ? <span className="text-[#787878]">{`  -  ${dir}`}</span> : null}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-2 shrink-0">
+              <label htmlFor="commit-message" className="text-xs uppercase tracking-wide text-[#787878]">
+                Commit message
+              </label>
+              <textarea
+                id="commit-message"
+                value={commitMessage}
+                onChange={(event) => setCommitMessage(event.target.value)}
+                rows={5}
+                disabled={commitBusy}
+                className="w-full min-h-28 max-h-56 resize-y rounded border border-[#323232] bg-[#2b2b2b] px-3 py-2 text-sm text-[#bbbbbb] focus:border-[#4e5254] focus:outline-none"
+                placeholder="Write commit message"
+              />
+            </div>
+
+            {commitError && (
+              <div className="rounded border border-[#6d2f2f] bg-[#4b2a2a] px-3 py-2 text-sm text-[#f2b8b5]">
+                {commitError}
               </div>
             )}
           </div>
 
-          {/* Bottom Bar - Branch Panel */}
-          <BranchPanel
-            branchCurrent={branches?.current ?? "No branch"}
-            localBranches={branches?.locals ?? []}
-            remoteBranches={branches?.remotes ?? []}
-            aheadBehind={aheadBehind}
-            counts={status?.counts}
-            checkoutBusy={branchBusy}
-            watcherStatus={watcherStatus}
-            watcherBusy={watcherBusy}
-            onCheckout={handleCheckout}
-            onManualRefresh={handleManualRefresh}
-          />
-        </>
+          <DialogFooter className="shrink-0 border-t border-[#323232] pt-4">
+            <Button
+              variant="outline"
+              onClick={() => setCommitDialogOpen(false)}
+              disabled={commitBusy}
+              className="border-[#4d4d4d] bg-transparent text-[#bbbbbb] hover:bg-[#4e5254]"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCommit}
+              disabled={
+                commitBusy ||
+                !commitMessage.trim() ||
+                selectedCommitPaths.length === 0 ||
+                stagedFiles.length === 0
+              }
+              className="bg-[#4e5254] text-[#bbbbbb] hover:bg-[#5a5e60]"
+            >
+              {commitBusy ? "Committing..." : "Commit"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {toast && (
+        <Toast
+          key={toast.id}
+          open
+          onOpenChange={(open) => {
+            if (!open) setToast(null);
+          }}
+          duration={toast.kind === "error" ? 6000 : 3500}
+          className={
+            toast.kind === "error"
+              ? "border-[#6d2f2f] bg-[#4b2a2a] text-[#f2b8b5]"
+              : "border-[#2f5d45] bg-[#2f473a] text-[#bbf7d0]"
+          }
+        >
+          <ToastTitle>{toast.title}</ToastTitle>
+          {toast.description && <ToastDescription>{toast.description}</ToastDescription>}
+          <ToastClose />
+        </Toast>
       )}
-    </div>
+      <ToastViewport />
+    </ToastProvider>
   );
 }

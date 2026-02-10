@@ -1,6 +1,6 @@
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashSet};
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -48,17 +48,9 @@ pub fn commit_changelist(
     let index_env = Some(("GIT_INDEX_FILE", index_path.to_string_lossy().to_string()));
 
     if head_oid.is_some() {
-        run_git(
-            &summary.path,
-            &["read-tree", "HEAD"],
-            index_env.as_ref(),
-        )?;
+        run_git(&summary.path, &["read-tree", "HEAD"], index_env.as_ref())?;
     } else {
-        run_git(
-            &summary.path,
-            &["read-tree", "--empty"],
-            index_env.as_ref(),
-        )?;
+        run_git(&summary.path, &["read-tree", "--empty"], index_env.as_ref())?;
     }
 
     let mut args = vec!["add", "-A", "--"];
@@ -74,9 +66,14 @@ pub fn commit_changelist(
     let tree_oid = tree_oid.trim();
 
     let commit_oid = if options.amend {
-        let head_oid = head_oid.clone().ok_or_else(|| "Cannot amend without existing commits.".to_string())?;
-        let parents_line =
-            run_git(&summary.path, &["rev-list", "--parents", "-n", "1", "HEAD"], None)?;
+        let head_oid = head_oid
+            .clone()
+            .ok_or_else(|| "Cannot amend without existing commits.".to_string())?;
+        let parents_line = run_git(
+            &summary.path,
+            &["rev-list", "--parents", "-n", "1", "HEAD"],
+            None,
+        )?;
         let mut parts = parents_line.split_whitespace();
         let _ = parts.next();
         let parents: Vec<&str> = parts.collect();
@@ -90,7 +87,14 @@ pub fn commit_changelist(
         update_ref(&summary.path, &head_oid, new_oid.trim())?;
         new_oid.trim().to_string()
     } else if let Some(head_oid) = head_oid.clone() {
-        let commit_args = ["commit-tree", tree_oid, "-m", message, "-p", head_oid.as_str()];
+        let commit_args = [
+            "commit-tree",
+            tree_oid,
+            "-m",
+            message,
+            "-p",
+            head_oid.as_str(),
+        ];
         let new_oid = run_git(&summary.path, &commit_args, None)?;
         update_ref(&summary.path, &head_oid, new_oid.trim())?;
         new_oid.trim().to_string()
@@ -143,11 +147,7 @@ pub fn commit_changelist_with_hunks(
     if head_oid.is_some() {
         run_git(&summary.path, &["read-tree", "HEAD"], index_env.as_ref())?;
     } else {
-        run_git(
-            &summary.path,
-            &["read-tree", "--empty"],
-            index_env.as_ref(),
-        )?;
+        run_git(&summary.path, &["read-tree", "--empty"], index_env.as_ref())?;
     }
 
     if !full_files.is_empty() {
@@ -178,8 +178,11 @@ pub fn commit_changelist_with_hunks(
         let head_oid = head_oid
             .clone()
             .ok_or_else(|| "Cannot amend without existing commits.".to_string())?;
-        let parents_line =
-            run_git(&summary.path, &["rev-list", "--parents", "-n", "1", "HEAD"], None)?;
+        let parents_line = run_git(
+            &summary.path,
+            &["rev-list", "--parents", "-n", "1", "HEAD"],
+            None,
+        )?;
         let mut parts = parents_line.split_whitespace();
         let _ = parts.next();
         let parents: Vec<&str> = parts.collect();
@@ -193,7 +196,14 @@ pub fn commit_changelist_with_hunks(
         update_ref(&summary.path, &head_oid, new_oid.trim())?;
         new_oid.trim().to_string()
     } else if let Some(head_oid) = head_oid.clone() {
-        let commit_args = ["commit-tree", tree_oid, "-m", message, "-p", head_oid.as_str()];
+        let commit_args = [
+            "commit-tree",
+            tree_oid,
+            "-m",
+            message,
+            "-p",
+            head_oid.as_str(),
+        ];
         let new_oid = run_git(&summary.path, &commit_args, None)?;
         update_ref(&summary.path, &head_oid, new_oid.trim())?;
         new_oid.trim().to_string()
@@ -218,11 +228,171 @@ pub fn commit_changelist_with_hunks(
     })
 }
 
-fn run_git(
-    repo_path: &str,
-    args: &[&str],
-    env: Option<&(&str, String)>,
-) -> Result<String, String> {
+pub fn commit_staged_paths(
+    summary: &RepoSummary,
+    paths: &[String],
+    message: &str,
+    options: &CommitOptions,
+) -> Result<CommitResult, String> {
+    let mut seen = HashSet::new();
+    let mut selected_paths = Vec::new();
+    for raw_path in paths {
+        let path = raw_path.trim();
+        if path.is_empty() {
+            continue;
+        }
+        if seen.insert(path.to_string()) {
+            selected_paths.push(path.to_string());
+        }
+    }
+
+    if selected_paths.is_empty() {
+        return Err("No files to commit.".to_string());
+    }
+    if message.trim().is_empty() {
+        return Err("Commit message is required.".to_string());
+    }
+
+    let repo = Repository::open(&summary.path).map_err(|e| e.to_string())?;
+    let git_dir = repo.path();
+    let tmp_dir = git_dir.join("gitpanel").join("tmp");
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "clock error".to_string())?
+        .as_millis();
+    let index_path = tmp_dir.join(format!("index-{millis}"));
+
+    let head_oid = run_git(&summary.path, &["rev-parse", "--verify", "HEAD"], None).ok();
+    let head_oid = head_oid.map(|value| value.trim().to_string());
+    let index_env = Some(("GIT_INDEX_FILE", index_path.to_string_lossy().to_string()));
+
+    if head_oid.is_some() {
+        run_git(&summary.path, &["read-tree", "HEAD"], index_env.as_ref())?;
+    } else {
+        run_git(&summary.path, &["read-tree", "--empty"], index_env.as_ref())?;
+    }
+
+    for path in &selected_paths {
+        let staged_entry = run_git(&summary.path, &["ls-files", "--stage", "--", path], None)?;
+        let entries: Vec<&str> = staged_entry
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+
+        if entries.is_empty() {
+            run_git(
+                &summary.path,
+                &["update-index", "--remove", "--", path],
+                index_env.as_ref(),
+            )?;
+            continue;
+        }
+
+        if entries.len() > 1 {
+            return Err(format!("Path '{path}' has unresolved merge conflicts."));
+        }
+
+        let parsed = parse_ls_files_stage_line(entries[0])?;
+        if parsed.stage != 0 {
+            return Err(format!("Path '{path}' has unresolved merge conflicts."));
+        }
+
+        let cacheinfo = format!("{},{},{}", parsed.mode, parsed.object_id, path);
+        run_git(
+            &summary.path,
+            &["update-index", "--add", "--cacheinfo", cacheinfo.as_str()],
+            index_env.as_ref(),
+        )?;
+    }
+
+    let tree_oid = run_git(&summary.path, &["write-tree"], index_env.as_ref())?;
+    let tree_oid = tree_oid.trim();
+
+    let commit_oid = if options.amend {
+        let head_oid = head_oid
+            .clone()
+            .ok_or_else(|| "Cannot amend without existing commits.".to_string())?;
+        let parents_line = run_git(
+            &summary.path,
+            &["rev-list", "--parents", "-n", "1", "HEAD"],
+            None,
+        )?;
+        let mut parts = parents_line.split_whitespace();
+        let _ = parts.next();
+        let parents: Vec<&str> = parts.collect();
+
+        let mut commit_args = vec!["commit-tree", tree_oid, "-m", message];
+        for parent in parents {
+            commit_args.push("-p");
+            commit_args.push(parent);
+        }
+        let new_oid = run_git(&summary.path, &commit_args, None)?;
+        update_ref(&summary.path, &head_oid, new_oid.trim())?;
+        new_oid.trim().to_string()
+    } else if let Some(head_oid) = head_oid.clone() {
+        let commit_args = [
+            "commit-tree",
+            tree_oid,
+            "-m",
+            message,
+            "-p",
+            head_oid.as_str(),
+        ];
+        let new_oid = run_git(&summary.path, &commit_args, None)?;
+        update_ref(&summary.path, &head_oid, new_oid.trim())?;
+        new_oid.trim().to_string()
+    } else {
+        let commit_args = ["commit-tree", tree_oid, "-m", message];
+        let new_oid = run_git(&summary.path, &commit_args, None)?;
+        update_ref(&summary.path, "", new_oid.trim())?;
+        new_oid.trim().to_string()
+    };
+
+    let _ = std::fs::remove_file(&index_path);
+
+    let head = repo_head(&repo)?;
+    Ok(CommitResult {
+        head,
+        commit_id: commit_oid,
+        committed_paths: selected_paths,
+    })
+}
+
+struct LsFilesStageEntry {
+    mode: String,
+    object_id: String,
+    stage: u8,
+}
+
+fn parse_ls_files_stage_line(line: &str) -> Result<LsFilesStageEntry, String> {
+    let (meta, _) = line
+        .split_once('\t')
+        .ok_or_else(|| "unexpected ls-files output".to_string())?;
+    let mut parts = meta.split_whitespace();
+    let mode = parts
+        .next()
+        .ok_or_else(|| "unexpected ls-files output".to_string())?
+        .to_string();
+    let object_id = parts
+        .next()
+        .ok_or_else(|| "unexpected ls-files output".to_string())?
+        .to_string();
+    let stage = parts
+        .next()
+        .ok_or_else(|| "unexpected ls-files output".to_string())?
+        .parse::<u8>()
+        .map_err(|_| "unexpected ls-files output".to_string())?;
+
+    Ok(LsFilesStageEntry {
+        mode,
+        object_id,
+        stage,
+    })
+}
+
+fn run_git(repo_path: &str, args: &[&str], env: Option<&(&str, String)>) -> Result<String, String> {
     let mut command = Command::new("git");
     command.arg("-C").arg(repo_path).args(args);
     if let Some((key, value)) = env {
@@ -309,7 +479,11 @@ fn update_ref(repo_path: &str, old_oid: &str, new_oid: &str) -> Result<(), Strin
         if old_oid.is_empty() {
             run_git(repo_path, &["update-ref", &reference, new_oid], None)?;
         } else {
-            run_git(repo_path, &["update-ref", &reference, new_oid, old_oid], None)?;
+            run_git(
+                repo_path,
+                &["update-ref", &reference, new_oid, old_oid],
+                None,
+            )?;
         }
     } else if old_oid.is_empty() {
         run_git(repo_path, &["update-ref", "HEAD", new_oid], None)?;
@@ -379,7 +553,9 @@ pub fn status(summary: &RepoSummary) -> Result<RepoStatus, String> {
         .renames_index_to_workdir(true)
         .include_ignored(false);
 
-    let statuses = repo.statuses(Some(&mut options)).map_err(|e| e.to_string())?;
+    let statuses = repo
+        .statuses(Some(&mut options))
+        .map_err(|e| e.to_string())?;
     let index = repo.index().ok();
     let mut files = Vec::new();
     let mut counts = RepoCounts {
@@ -531,25 +707,41 @@ pub fn diff_hunks_for_path(
     Ok(parse_diff_hunks(&diff.text, path, kind))
 }
 
-pub fn diff_hunks_from_text(
-    diff_text: &str,
-    path: &str,
-    kind: RepoDiffKind,
-) -> Vec<DiffHunk> {
+pub fn diff_hunks_from_text(diff_text: &str, path: &str, kind: RepoDiffKind) -> Vec<DiffHunk> {
     parse_diff_hunks(diff_text, path, kind)
 }
 
 pub fn stage_path(summary: &RepoSummary, path: &str) -> Result<(), String> {
     let repo = Repository::open(&summary.path).map_err(|e| e.to_string())?;
     let mut index = repo.index().map_err(|e| e.to_string())?;
-    index
-        .add_path(Path::new(path))
-        .map_err(|e| e.to_string())?;
+    index.add_path(Path::new(path)).map_err(|e| e.to_string())?;
     index.write().map_err(|e| e.to_string())
 }
 
 pub fn track_path(summary: &RepoSummary, path: &str) -> Result<(), String> {
     run_git(&summary.path, &["add", "-N", "--", path], None).map(|_| ())
+}
+
+pub fn delete_unversioned_path(summary: &RepoSummary, path: &str) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Path is required.".to_string());
+    }
+
+    let target_path = Path::new(trimmed);
+    if target_path.is_absolute() {
+        return Err("Path must be repository-relative.".to_string());
+    }
+    if target_path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err("Invalid path.".to_string());
+    }
+
+    run_git(&summary.path, &["clean", "-fd", "--", trimmed], None).map(|_| ())
 }
 
 pub fn unstage_path(summary: &RepoSummary, path: &str) -> Result<(), String> {
@@ -639,11 +831,7 @@ pub fn checkout_branch(
     Ok(CheckoutResult { head })
 }
 
-pub fn create_branch(
-    summary: &RepoSummary,
-    name: &str,
-    from: Option<&str>,
-) -> Result<(), String> {
+pub fn create_branch(summary: &RepoSummary, name: &str, from: Option<&str>) -> Result<(), String> {
     let repo = Repository::open(&summary.path).map_err(|e| e.to_string())?;
     let target = if let Some(from) = from {
         repo.revparse_single(from).map_err(|e| e.to_string())?
@@ -695,7 +883,9 @@ pub fn list_worktrees(repo_root: &str) -> Result<WorktreeList, String> {
                 worktrees.push(WorktreeInfo {
                     path,
                     head: current_head.take().unwrap_or_else(|| "unknown".to_string()),
-                    branch: current_branch.take().unwrap_or_else(|| "DETACHED".to_string()),
+                    branch: current_branch
+                        .take()
+                        .unwrap_or_else(|| "DETACHED".to_string()),
                 });
             }
             current_path = Some(line.trim_start_matches("worktree ").trim().to_string());
@@ -711,7 +901,9 @@ pub fn list_worktrees(repo_root: &str) -> Result<WorktreeList, String> {
         worktrees.push(WorktreeInfo {
             path,
             head: current_head.take().unwrap_or_else(|| "unknown".to_string()),
-            branch: current_branch.take().unwrap_or_else(|| "DETACHED".to_string()),
+            branch: current_branch
+                .take()
+                .unwrap_or_else(|| "DETACHED".to_string()),
         });
     }
 
@@ -769,10 +961,7 @@ pub fn repo_id_for_path(path: &str) -> RepoId {
 fn repo_head(repo: &Repository) -> Result<RepoHead, String> {
     match repo.head() {
         Ok(head) => {
-            let branch_name = head
-                .shorthand()
-                .unwrap_or("DETACHED")
-                .to_string();
+            let branch_name = head.shorthand().unwrap_or("DETACHED").to_string();
             let oid_short = head
                 .target()
                 .map(|oid| oid.to_string())
@@ -803,10 +992,7 @@ fn is_index_change(status: Status) -> bool {
 
 fn is_workdir_change(status: Status) -> bool {
     status.intersects(
-        Status::WT_MODIFIED
-            | Status::WT_DELETED
-            | Status::WT_RENAMED
-            | Status::WT_TYPECHANGE,
+        Status::WT_MODIFIED | Status::WT_DELETED | Status::WT_RENAMED | Status::WT_TYPECHANGE,
     )
 }
 
@@ -927,15 +1113,13 @@ pub fn diff_cache_key(
             &["rev-parse", &format!("HEAD:{normalized_path}")],
             None,
         )
-            .ok(),
-        RepoDiffKind::Unstaged => {
-            run_git(
-                &summary.path,
-                &["rev-parse", &format!(":{normalized_path}")],
-                None,
-            )
-            .ok()
-        }
+        .ok(),
+        RepoDiffKind::Unstaged => run_git(
+            &summary.path,
+            &["rev-parse", &format!(":{normalized_path}")],
+            None,
+        )
+        .ok(),
     };
 
     let new_oid = match kind {
@@ -945,11 +1129,17 @@ pub fn diff_cache_key(
             None,
         )
         .ok(),
-        RepoDiffKind::Unstaged => run_git(&summary.path, &["hash-object", &normalized_path], None).ok(),
+        RepoDiffKind::Unstaged => {
+            run_git(&summary.path, &["hash-object", &normalized_path], None).ok()
+        }
     };
 
-    let old_oid = old_oid.map(|value| value.trim().to_string()).unwrap_or_else(|| "none".to_string());
-    let new_oid = new_oid.map(|value| value.trim().to_string()).unwrap_or_else(|| "none".to_string());
+    let old_oid = old_oid
+        .map(|value| value.trim().to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let new_oid = new_oid
+        .map(|value| value.trim().to_string())
+        .unwrap_or_else(|| "none".to_string());
     Ok(format!(
         "{}:{}:{}:{}:{}",
         DIFF_CACHE_VERSION, summary.repo_id, normalized_path, old_oid, new_oid
@@ -1258,11 +1448,11 @@ fn checkout_local(repo: &Repository, name: &str) -> Result<(), RepoError> {
 }
 
 fn checkout_remote(repo: &Repository, name: &str) -> Result<(), RepoError> {
-    let obj = repo.revparse_single(&format!("refs/remotes/{name}")).map_err(|e| {
-        RepoError::GitError {
+    let obj = repo
+        .revparse_single(&format!("refs/remotes/{name}"))
+        .map_err(|e| RepoError::GitError {
             message: e.to_string(),
-        }
-    })?;
+        })?;
 
     let mut branch_name = name.to_string();
     if let Some((_remote, short)) = name.split_once('/') {

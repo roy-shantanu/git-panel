@@ -309,6 +309,15 @@ pub struct CommitExecuteRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitStagedRequest {
+    pub repo_id: RepoId,
+    pub message: String,
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub options: CommitOptions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitPreview {
     pub changelist_id: String,
     pub files: Vec<StatusFile>,

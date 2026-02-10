@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { GitCommit, Settings, History, Search, GitBranch } from "lucide-react";
+import { Settings, History, Search, GitBranch } from "lucide-react";
 import { Button } from "./ui/button";
 import {
   Dialog,
@@ -13,12 +13,11 @@ import { Switch } from "./ui/switch";
 import { Separator } from "./ui/separator";
 
 interface LeftNavPanelProps {
-  onCommitClick: () => void;
   onSourceControlToggle: () => void;
   isSourceControlOpen: boolean;
 }
 
-export function LeftNavPanel({ onCommitClick, onSourceControlToggle, isSourceControlOpen }: LeftNavPanelProps) {
+export function LeftNavPanel({ onSourceControlToggle, isSourceControlOpen }: LeftNavPanelProps) {
   const [isDarkTheme, setIsDarkTheme] = useState(true);
 
   return (
@@ -34,17 +33,6 @@ export function LeftNavPanel({ onCommitClick, onSourceControlToggle, isSourceCon
         onClick={onSourceControlToggle}
       >
         <GitBranch className="size-5" />
-      </Button>
-
-      {/* Commit Button */}
-      <Button
-        variant="ghost"
-        size="icon"
-        className="size-10 hover:bg-[#4e5254] text-[#afb1b3]"
-        title="Commit"
-        onClick={onCommitClick}
-      >
-        <GitCommit className="size-5" />
       </Button>
 
       {/* History Button */}
