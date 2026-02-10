@@ -284,7 +284,16 @@ pub async fn repo_stage(
         guard.get_repo(&req.repo_id)
     };
     let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
-    git::stage_path(&summary, &req.path)
+    git::stage_path(&summary, &req.path)?;
+    if let Err(error) = refresh_cached_status(&summary, &state) {
+        tracing::warn!(
+            repo_id = %summary.repo_id,
+            path = %req.path,
+            error = %error,
+            "failed to refresh cached status after stage"
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -297,7 +306,16 @@ pub async fn repo_unstage(
         guard.get_repo(&req.repo_id)
     };
     let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
-    git::unstage_path(&summary, &req.path)
+    git::unstage_path(&summary, &req.path)?;
+    if let Err(error) = refresh_cached_status(&summary, &state) {
+        tracing::warn!(
+            repo_id = %summary.repo_id,
+            path = %req.path,
+            error = %error,
+            "failed to refresh cached status after unstage"
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -599,6 +617,20 @@ fn update_cached_changelists(
             guard.set_status(cached.status);
         }
     }
+    Ok(())
+}
+
+fn refresh_cached_status(
+    summary: &RepoSummary,
+    state: &State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let mut status = git::status(summary)?;
+    if let Ok(mut cl_state) = changelist::load_state(summary) {
+        let _ = changelist::apply_to_status(summary, &mut cl_state, &mut status);
+    }
+
+    let mut guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+    guard.set_status(status);
     Ok(())
 }
 

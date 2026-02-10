@@ -21,7 +21,7 @@ import {
   DialogHeader,
   DialogTitle
 } from "./ui/dialog";
-import type { ChangelistState, RepoStatus, StatusFile } from "../../types/ipc";
+import type { ChangelistState, RepoDiffKind, RepoStatus, StatusFile } from "../../types/ipc";
 
 interface ChangesPanelProps {
   status?: RepoStatus;
@@ -37,6 +37,7 @@ interface ChangesPanelProps {
   fileActionBusyPath: string | null;
   onFileSelect: (file: StatusFile, kind: "staged" | "unstaged") => void;
   selectedFile: StatusFile | null;
+  selectedDiffKind: RepoDiffKind;
   viewMode: "unified" | "sideBySide";
   onViewModeChange: (mode: "unified" | "sideBySide") => void;
   showHunks: boolean;
@@ -44,17 +45,18 @@ interface ChangesPanelProps {
 }
 
 const STAGED_LIST_ID = "staged";
+const UNVERSIONED_LIST_ID = "unversioned-files";
+const UNVERSIONED_LIST_NAME = "Unversioned files";
 const EMPTY_FILES: StatusFile[] = [];
 const ICONS_URL = "/material-icons";
 
 const isStagedStatus = (status: StatusFile["status"]) =>
   status === "staged" || status === "both";
 
-const isUnstagedStatus = (status: StatusFile["status"]) =>
-  status === "unstaged" ||
-  status === "untracked" ||
-  status === "both" ||
-  status === "conflicted";
+const isTrackedUnstagedStatus = (status: StatusFile["status"]) =>
+  status === "unstaged" || status === "both" || status === "conflicted";
+
+const isUnversionedStatus = (status: StatusFile["status"]) => status === "untracked";
 
 const getStatusTextColor = (status: StatusFile["status"]) => {
   if (status === "untracked") return "text-[#629755]"; // added
@@ -92,6 +94,7 @@ export function ChangesPanel({
   fileActionBusyPath,
   onFileSelect,
   selectedFile,
+  selectedDiffKind,
   viewMode,
   onViewModeChange,
   showHunks,
@@ -112,11 +115,15 @@ export function ChangesPanel({
     () => files.filter((file) => isStagedStatus(file.status)),
     [files]
   );
+  const unversionedFiles = useMemo(
+    () => files.filter((file) => isUnversionedStatus(file.status)),
+    [files]
+  );
 
   const filesByChangelist = useMemo(() => {
     const map = new Map<string, StatusFile[]>();
     for (const file of files) {
-      if (!isUnstagedStatus(file.status)) continue;
+      if (!isTrackedUnstagedStatus(file.status)) continue;
       const key = file.changelist_id ?? "default";
       const list = map.get(key);
       if (list) {
@@ -131,7 +138,7 @@ export function ChangesPanel({
   const unstagedCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const file of files) {
-      if (!isUnstagedStatus(file.status)) continue;
+      if (!isTrackedUnstagedStatus(file.status)) continue;
       const key = file.changelist_id ?? "default";
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
@@ -292,6 +299,8 @@ export function ChangesPanel({
                   stagedFiles.map((file) => {
                     const icon = getFileIconInfo(file.path);
                     const { name, dir } = splitPath(file.path);
+                    const isSelected =
+                      selectedFile?.path === file.path && selectedDiffKind === "staged";
                     return (
                       <div
                         key={`staged-${file.path}`}
@@ -299,8 +308,10 @@ export function ChangesPanel({
                       >
                         <button
                           onClick={() => onFileSelect(file, "staged")}
+                          data-active={isSelected ? "true" : "false"}
+                          data-testid={`file-row-staged:${file.path}`}
                           className={`flex items-center gap-2 min-w-0 overflow-hidden px-2 py-1.5 rounded text-left hover:bg-[#4e5254] ${
-                            selectedFile?.path === file.path ? "bg-[#4e5254]" : ""
+                            isSelected ? "bg-[#4e5254]" : ""
                           }`}
                           title={file.path}
                         >
@@ -338,8 +349,102 @@ export function ChangesPanel({
                           onClick={() => onUnstageFile(file)}
                           disabled={fileActionBusyPath === file.path}
                           title="Unstage file"
+                          data-testid={`file-action-unstage:${file.path}`}
                         >
                           <Minus className="size-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="mb-2">
+            <button
+              onClick={() => toggleSection(UNVERSIONED_LIST_ID)}
+              className="flex items-center gap-2 w-full px-2 py-1.5 hover:bg-[#4e5254] rounded text-left"
+            >
+              {collapsed.has(UNVERSIONED_LIST_ID) ? (
+                <ChevronRight className="size-4 text-[#afb1b3]" />
+              ) : (
+                <ChevronDown className="size-4 text-[#afb1b3]" />
+              )}
+              <span
+                className={`text-sm ${
+                  selectedChangelistId === UNVERSIONED_LIST_ID
+                    ? "text-[#bbbbbb]"
+                    : "text-[#9b9b9b]"
+                }`}
+              >
+                {UNVERSIONED_LIST_NAME} ({unversionedFiles.length})
+              </span>
+            </button>
+            {!collapsed.has(UNVERSIONED_LIST_ID) && (
+              <div className="mt-1 ml-2">
+                {unversionedFiles.length === 0 ? (
+                  <div className="px-2 py-1.5 text-xs text-[#787878]">No files</div>
+                ) : (
+                  unversionedFiles.map((file) => {
+                    const icon = getFileIconInfo(file.path);
+                    const { name, dir } = splitPath(file.path);
+                    const isSelected =
+                      selectedFile?.path === file.path && selectedDiffKind === "unstaged";
+                    return (
+                      <div
+                        key={`unversioned-${file.path}`}
+                        className="grid grid-cols-[minmax(0,1fr)_20px_20px] items-center gap-1 w-full min-w-0"
+                      >
+                        <button
+                          onClick={() => {
+                            onSelectedChangelistChange(UNVERSIONED_LIST_ID);
+                            onFileSelect(file, "unstaged");
+                          }}
+                          data-active={isSelected ? "true" : "false"}
+                          data-testid={`file-row-unstaged:${UNVERSIONED_LIST_ID}:${file.path}`}
+                          className={`flex items-center gap-2 min-w-0 overflow-hidden px-2 py-1.5 rounded text-left hover:bg-[#4e5254] ${
+                            isSelected ? "bg-[#4e5254]" : ""
+                          }`}
+                          title={file.path}
+                        >
+                          <img
+                            className={`size-3.5 shrink-0 ${icon.className}`}
+                            src={icon.url}
+                            alt=""
+                            aria-hidden="true"
+                            loading="lazy"
+                          />
+                          <span
+                            className={`text-xs truncate max-w-28 shrink ${getStatusTextColor(file.status)}`}
+                          >
+                            {name}
+                          </span>
+                          {dir && (
+                            <span
+                              className="text-xs text-[#787878] truncate flex-1 min-w-0"
+                              title={file.path}
+                            >
+                              {dir}
+                            </span>
+                          )}
+                        </button>
+                        <button
+                          className="h-5 w-5 shrink-0 flex items-center justify-center text-[#afb1b3] hover:bg-[#4e5254] rounded disabled:opacity-40"
+                          title="Revert (coming soon)"
+                          disabled
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <Undo2 className="size-3" />
+                        </button>
+                        <button
+                          className="h-5 w-5 shrink-0 flex items-center justify-center text-[#afb1b3] hover:bg-[#4e5254] rounded disabled:opacity-50"
+                          onClick={() => onStageFile(file)}
+                          disabled={fileActionBusyPath === file.path}
+                          title="Stage file"
+                          data-testid={`file-action-stage:${UNVERSIONED_LIST_ID}:${file.path}`}
+                        >
+                          <Plus className="size-3.5" />
                         </button>
                       </div>
                     );
@@ -415,6 +520,8 @@ export function ChangesPanel({
                       listFiles.map((file) => {
                         const icon = getFileIconInfo(file.path);
                         const { name, dir } = splitPath(file.path);
+                        const isSelected =
+                          selectedFile?.path === file.path && selectedDiffKind === "unstaged";
                         return (
                           <div
                             key={`${list.id}-${file.path}`}
@@ -425,8 +532,10 @@ export function ChangesPanel({
                                 onSelectedChangelistChange(list.id);
                                 onFileSelect(file, "unstaged");
                               }}
+                              data-active={isSelected ? "true" : "false"}
+                              data-testid={`file-row-unstaged:${list.id}:${file.path}`}
                               className={`flex items-center gap-2 min-w-0 overflow-hidden px-2 py-1.5 rounded text-left hover:bg-[#4e5254] ${
-                                selectedFile?.path === file.path ? "bg-[#4e5254]" : ""
+                                isSelected ? "bg-[#4e5254]" : ""
                               }`}
                               title={file.path}
                             >

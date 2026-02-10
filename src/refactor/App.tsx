@@ -37,6 +37,17 @@ import type {
   WorktreeInfo
 } from "../types/ipc";
 
+const hasStagedChanges = (status: StatusFile["status"]) =>
+  status === "staged" || status === "both";
+
+const hasUnstagedChanges = (status: StatusFile["status"]) =>
+  status === "unstaged" ||
+  status === "untracked" ||
+  status === "both" ||
+  status === "conflicted";
+
+const UNVERSIONED_LIST_ID = "unversioned-files";
+
 export default function App() {
   const { repo, status, recent, setRepo, setRecent, setStatus } = useAppStore();
   const [branches, setBranches] = useState<BranchList | null>(null);
@@ -198,6 +209,7 @@ export default function App() {
 
   useEffect(() => {
     if (!changelists) return;
+    if (selectedChangelistId === UNVERSIONED_LIST_ID) return;
     const ids = new Set(changelists.lists.map((item) => item.id));
     if (!ids.has(selectedChangelistId)) {
       setSelectedChangelistId("default");
@@ -214,6 +226,15 @@ export default function App() {
       return;
     }
     setSelectedFile(matched);
+    setSelectedDiffKind((prev) => {
+      if (prev === "staged" && !hasStagedChanges(matched.status)) {
+        return "unstaged";
+      }
+      if (prev === "unstaged" && !hasUnstagedChanges(matched.status)) {
+        return "staged";
+      }
+      return prev;
+    });
   }, [selectedFile, status]);
 
   useEffect(() => {
@@ -392,14 +413,18 @@ export default function App() {
     try {
       setFileActionBusyPath(file.path);
       await repoUnstage(repo.repo_id, file.path);
-      if (changelists) {
-        const targetId = changelists.active_id ?? "default";
-        try {
-          await clAssignFiles(repo.repo_id, targetId, [file.path]);
-        } catch (assignError) {
-          // Keep unstage successful even if assignment fails due transient backend state.
-          console.error("cl_assign_files failed after unstage", assignError);
-        }
+      let targetId = "default";
+      try {
+        const latestChangelists = await clList(repo.repo_id);
+        targetId = latestChangelists.active_id ?? "default";
+      } catch (listError) {
+        console.error("cl_list failed before unstage assignment", listError);
+      }
+      try {
+        await clAssignFiles(repo.repo_id, targetId, [file.path]);
+      } catch (assignError) {
+        // Keep unstage successful even if assignment fails due transient backend state.
+        console.error("cl_assign_files failed after unstage", assignError);
       }
       const nextStatus = await repoStatus(repo.repo_id);
       setStatus(nextStatus);
@@ -499,6 +524,7 @@ export default function App() {
                 fileActionBusyPath={fileActionBusyPath}
                 onFileSelect={handleSelectStatusFile}
                 selectedFile={selectedFile}
+                selectedDiffKind={selectedDiffKind}
                 viewMode={viewMode}
                 onViewModeChange={setViewMode}
                 showHunks={showHunks}
