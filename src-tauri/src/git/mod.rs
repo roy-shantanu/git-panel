@@ -9,7 +9,7 @@ use std::os::windows::process::CommandExt;
 
 use git2::{
     build::CheckoutBuilder, BranchType, DiffFormat, DiffOptions, ErrorCode, FetchOptions,
-    ObjectType, RemoteCallbacks, Repository, Status, StatusOptions,
+    IndexEntryExtendedFlag, ObjectType, RemoteCallbacks, Repository, Status, StatusOptions,
 };
 
 use crate::model::{
@@ -380,6 +380,7 @@ pub fn status(summary: &RepoSummary) -> Result<RepoStatus, String> {
         .include_ignored(false);
 
     let statuses = repo.statuses(Some(&mut options)).map_err(|e| e.to_string())?;
+    let index = repo.index().ok();
     let mut files = Vec::new();
     let mut counts = RepoCounts {
         staged: 0,
@@ -394,8 +395,22 @@ pub fn status(summary: &RepoSummary) -> Result<RepoStatus, String> {
             continue;
         }
 
+        let (path, old_path) = extract_paths(&entry);
+        let Some(path) = path else {
+            continue;
+        };
+
         let is_conflicted = status.contains(Status::CONFLICTED);
         let is_untracked = status.contains(Status::WT_NEW) && !status.contains(Status::INDEX_NEW);
+        let is_intent_to_add = status.contains(Status::INDEX_NEW)
+            && index
+                .as_ref()
+                .and_then(|value| value.get_path(Path::new(&path), 0))
+                .map(|entry| {
+                    IndexEntryExtendedFlag::from_bits_truncate(entry.flags_extended)
+                        .is_intent_to_add()
+                })
+                .unwrap_or(false);
         let staged = is_index_change(status);
         let unstaged = is_workdir_change(status);
 
@@ -405,6 +420,9 @@ pub fn status(summary: &RepoSummary) -> Result<RepoStatus, String> {
         } else if is_untracked {
             counts.untracked += 1;
             StatusKind::Untracked
+        } else if is_intent_to_add {
+            counts.unstaged += 1;
+            StatusKind::Unstaged
         } else if staged && unstaged {
             counts.staged += 1;
             counts.unstaged += 1;
@@ -419,17 +437,14 @@ pub fn status(summary: &RepoSummary) -> Result<RepoStatus, String> {
             continue;
         };
 
-        let (path, old_path) = extract_paths(&entry);
-        if let Some(path) = path {
-            files.push(StatusFile {
-                path,
-                status: kind,
-                old_path,
-                changelist_id: None,
-                changelist_name: None,
-                changelist_partial: None,
-            });
-        }
+        files.push(StatusFile {
+            path,
+            status: kind,
+            old_path,
+            changelist_id: None,
+            changelist_name: None,
+            changelist_partial: None,
+        });
     }
 
     Ok(RepoStatus {
@@ -531,6 +546,10 @@ pub fn stage_path(summary: &RepoSummary, path: &str) -> Result<(), String> {
         .add_path(Path::new(path))
         .map_err(|e| e.to_string())?;
     index.write().map_err(|e| e.to_string())
+}
+
+pub fn track_path(summary: &RepoSummary, path: &str) -> Result<(), String> {
+    run_git(&summary.path, &["add", "-N", "--", path], None).map(|_| ())
 }
 
 pub fn unstage_path(summary: &RepoSummary, path: &str) -> Result<(), String> {
@@ -1037,7 +1056,7 @@ fn hash_content(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_diff_hunks, stage_path, status, unstage_path, RepoDiffKind};
+    use super::{parse_diff_hunks, stage_path, status, track_path, unstage_path, RepoDiffKind};
     use crate::model::{RepoSummary, StatusKind};
     use git2::{Repository, Signature};
     use std::fs;
@@ -1180,6 +1199,26 @@ index 1111111..2222222 100644\n\
             .files
             .iter()
             .any(|file| file.path == "tracked.txt"));
+
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn track_new_file_marks_it_as_unstaged() {
+        let (summary, path) = init_repo_with_commit();
+        fs::write(path.join("intent.txt"), "intent\n").expect("write intent");
+
+        track_path(&summary, "intent.txt").expect("track file");
+
+        let repo_status = status(&summary).expect("status");
+        let entry = repo_status
+            .files
+            .iter()
+            .find(|file| file.path == "intent.txt")
+            .expect("intent file in status");
+        assert!(matches!(entry.status, StatusKind::Unstaged));
+        assert_eq!(repo_status.counts.staged, 0);
+        assert_eq!(repo_status.counts.untracked, 0);
 
         let _ = fs::remove_dir_all(path);
     }

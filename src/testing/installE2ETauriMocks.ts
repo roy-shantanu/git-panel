@@ -42,6 +42,13 @@ const nextStatusAfterUnstage = (status: StatusFile["status"]): StatusFile["statu
   return status;
 };
 
+const nextStatusAfterTrack = (status: StatusFile["status"]): StatusFile["status"] => {
+  if (status === "untracked") {
+    return "unstaged";
+  }
+  return status;
+};
+
 const computeCounts = (files: StatusFile[]) => {
   let staged = 0;
   let unstaged = 0;
@@ -254,6 +261,7 @@ const updateFileStatus = (
 
 export function installE2ETauriMocks() {
   let runtime = createMockState();
+  let nextChangelistSeed = 1;
 
   mockWindows("main");
   mockIPC(
@@ -267,6 +275,7 @@ export function installE2ETauriMocks() {
           return MOCK_REPO.path;
         case "repo_open":
           runtime = createMockState();
+          nextChangelistSeed = 1;
           return deepCopy(MOCK_REPO);
         case "repo_open_worktree":
           return {
@@ -305,6 +314,13 @@ export function installE2ETauriMocks() {
           }
           return null;
         }
+        case "repo_track": {
+          const path = typeof req.path === "string" ? req.path : "";
+          if (path) {
+            updateFileStatus(runtime, path, nextStatusAfterTrack);
+          }
+          return null;
+        }
         case "repo_unstage": {
           const path = typeof req.path === "string" ? req.path : "";
           if (path) {
@@ -332,9 +348,52 @@ export function installE2ETauriMocks() {
           }
           return null;
         }
-        case "cl_create":
-        case "cl_rename":
-        case "cl_delete":
+        case "cl_create": {
+          const name = typeof req.name === "string" ? req.name.trim() : "";
+          const nextName = name || `Mock changelist ${nextChangelistSeed}`;
+          const nextList: Changelist = {
+            id: `mock-${nextChangelistSeed}`,
+            name: nextName,
+            created_at: Date.UTC(2026, 1, 10, 0, nextChangelistSeed)
+          };
+          nextChangelistSeed += 1;
+          runtime.changelists.lists.push(nextList);
+          return deepCopy(nextList);
+        }
+        case "cl_rename": {
+          const id = typeof req.id === "string" ? req.id : "";
+          const name = typeof req.name === "string" ? req.name.trim() : "";
+          if (!id || !name) return null;
+          const target = runtime.changelists.lists.find((list) => list.id === id);
+          if (target) {
+            target.name = name;
+            syncStatusFromChangelists(runtime);
+          }
+          return null;
+        }
+        case "cl_delete": {
+          const id = typeof req.id === "string" ? req.id : "";
+          if (!id || id === DEFAULT_CHANGE_LIST_ID) return null;
+          runtime.changelists.lists = runtime.changelists.lists.filter((list) => list.id !== id);
+          if (runtime.changelists.active_id === id) {
+            runtime.changelists.active_id = DEFAULT_CHANGE_LIST_ID;
+          }
+          for (const [path, assignedId] of Object.entries(runtime.changelists.assignments)) {
+            if (assignedId === id) {
+              delete runtime.changelists.assignments[path];
+            }
+          }
+          for (const [path, assignment] of Object.entries(runtime.changelists.hunk_assignments)) {
+            if (assignment.changelist_id === id) {
+              delete runtime.changelists.hunk_assignments[path];
+            }
+          }
+          syncStatusFromChangelists(runtime);
+          return null;
+        }
+        case "cl_unassign_files":
+        case "cl_assign_hunks":
+        case "cl_unassign_hunks":
           return null;
         default:
           return null;

@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 const UNVERSIONED_FILE_PATH = "src/unversioned-target.ts";
 const UNVERSIONED_LIST_ID = "unversioned-files";
+const ACTIVE_LIST_ID = "feature";
 
 test("unversioned files appear under dedicated changelist section", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
@@ -30,5 +31,6 @@ test("unversioned files appear under dedicated changelist section", async ({ pag
   await expect(
     page.getByTestId(`file-row-unstaged:${UNVERSIONED_LIST_ID}:${UNVERSIONED_FILE_PATH}`)
   ).toHaveCount(0);
-  await expect(page.getByTestId(`file-row-staged:${UNVERSIONED_FILE_PATH}`)).toBeVisible();
+  await expect(page.getByTestId(`file-row-staged:${UNVERSIONED_FILE_PATH}`)).toHaveCount(0);
+  await expect(page.getByTestId(`file-row-unstaged:${ACTIVE_LIST_ID}:${UNVERSIONED_FILE_PATH}`)).toBeVisible();
 });

@@ -11,6 +11,7 @@ import type { WatcherStatus } from "./components/WatcherPill";
 import { useAppStore } from "../state/store";
 import {
   clAssignFiles,
+  clAssignHunks,
   clCreate,
   clDelete,
   clList,
@@ -24,6 +25,7 @@ import {
   repoOpenWorktree,
   repoDiffPayload,
   repoStage,
+  repoTrack,
   repoStatus,
   repoUnstage,
   wtList
@@ -47,6 +49,7 @@ const hasUnstagedChanges = (status: StatusFile["status"]) =>
   status === "conflicted";
 
 const UNVERSIONED_LIST_ID = "unversioned-files";
+const DEFAULT_CHANGE_LIST_ID = "default";
 
 export default function App() {
   const { repo, status, recent, setRepo, setRecent, setStatus } = useAppStore();
@@ -380,12 +383,45 @@ export default function App() {
 
   const handleDeleteChangelist = async (id: string) => {
     if (!repo?.repo_id) return;
-    await clDelete(repo.repo_id, id);
-    if (selectedChangelistId === id) {
-      setSelectedChangelistId("default");
+    const repoId = repo.repo_id;
+    const latestChangelists = await clList(repoId);
+    let targetId =
+      id === latestChangelists.active_id
+        ? DEFAULT_CHANGE_LIST_ID
+        : latestChangelists.active_id ?? DEFAULT_CHANGE_LIST_ID;
+
+    if (
+      id === latestChangelists.active_id &&
+      latestChangelists.active_id !== DEFAULT_CHANGE_LIST_ID
+    ) {
+      await clSetActive(repoId, DEFAULT_CHANGE_LIST_ID);
+      targetId = DEFAULT_CHANGE_LIST_ID;
     }
-    const next = await clList(repo.repo_id);
-    setChangelists(next);
+
+    const pathsToMove = Object.entries(latestChangelists.assignments)
+      .filter(([, assignedId]) => assignedId === id)
+      .map(([path]) => path);
+
+    if (pathsToMove.length > 0 && targetId !== id) {
+      await clAssignFiles(repoId, targetId, pathsToMove);
+    }
+
+    const hunkAssignmentsToMove = Object.entries(latestChangelists.hunk_assignments).filter(
+      ([, assignment]) => assignment.changelist_id === id
+    );
+    if (targetId !== id) {
+      await Promise.all(
+        hunkAssignmentsToMove.map(([path, assignment]) =>
+          clAssignHunks(repoId, targetId, path, assignment.hunks)
+        )
+      );
+    }
+
+    await clDelete(repoId, id);
+    if (selectedChangelistId === id) {
+      setSelectedChangelistId(targetId);
+    }
+    await refreshRepoData(repoId);
   };
 
   const handleSetActiveChangelist = async (id: string) => {
@@ -399,7 +435,18 @@ export default function App() {
     if (!repo?.repo_id) return;
     try {
       setFileActionBusyPath(file.path);
-      await repoStage(repo.repo_id, file.path);
+      if (file.status === "untracked") {
+        await repoTrack(repo.repo_id, file.path);
+        try {
+          const latestChangelists = await clList(repo.repo_id);
+          const targetId = latestChangelists.active_id ?? DEFAULT_CHANGE_LIST_ID;
+          await clAssignFiles(repo.repo_id, targetId, [file.path]);
+        } catch (assignError) {
+          console.error("cl_assign_files failed after stage", assignError);
+        }
+      } else {
+        await repoStage(repo.repo_id, file.path);
+      }
       await refreshRepoData(repo.repo_id);
     } catch (error) {
       console.error("repo_stage failed", error);

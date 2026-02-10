@@ -69,6 +69,10 @@ export async function repoStage(repo_id: string, path: string): Promise<void> {
   return invoke("repo_stage", { req: { repo_id, path } });
 }
 
+export async function repoTrack(repo_id: string, path: string): Promise<void> {
+  return invoke("repo_track", { req: { repo_id, path } });
+}
+
 export async function repoUnstage(repo_id: string, path: string): Promise<void> {
   return invoke("repo_unstage", { req: { repo_id, path } });
 }

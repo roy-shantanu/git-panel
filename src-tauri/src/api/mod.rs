@@ -297,6 +297,28 @@ pub async fn repo_stage(
 }
 
 #[tauri::command]
+pub async fn repo_track(
+    req: RepoPathRequest,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let summary = {
+        let guard = state.lock().map_err(|_| "state lock failed".to_string())?;
+        guard.get_repo(&req.repo_id)
+    };
+    let summary = summary.ok_or_else(|| "unknown repo id".to_string())?;
+    git::track_path(&summary, &req.path)?;
+    if let Err(error) = refresh_cached_status(&summary, &state) {
+        tracing::warn!(
+            repo_id = %summary.repo_id,
+            path = %req.path,
+            error = %error,
+            "failed to refresh cached status after track"
+        );
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn repo_unstage(
     req: RepoPathRequest,
     state: State<'_, Mutex<AppState>>,
